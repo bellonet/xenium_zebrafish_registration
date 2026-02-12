@@ -1,0 +1,48 @@
+# Elastix Registration Configuration
+# fixed_image_path: Path to the fixed image.
+# moving_image_path: Path to the moving image.
+# downsample_factor: Factor to downsample the images (e.g., 2 means images are reduced to half dimensions).
+# output_dir: Directory where output images are saved.
+#
+# Elastix Registration Parameters:
+# n_resolutions: Number of resolution levels; more levels allow coarse-to-fine alignment.
+# max_iterations: Maximum iterations per resolution level; higher values improve convergence.
+# metric: Similarity measure for registration; 'AdvancedMeanSquares' is used for mono-modal images.
+# initial_step_length: Initial optimizer step size; larger values speed up early stages.
+# min_step_length: Smallest allowed step size; enables finer adjustments.
+# num_spatial_samples: Number of pixels used to compute the metric; higher numbers improve accuracy.
+
+fixed_image_path: "/home/ella/work/scott/analysis/individual_fish/1/2d/11.tif"
+moving_image_path: "/home/ella/work/scott/analysis/individual_fish/1/2d/10.tif"
+
+output_dir_prefix: "output"
+downsample_factor: 2
+normalize: true 
+pad_px: 30
+max_tile_gap: 2   # break when gap > 1
+
+# transform: affine
+# n_resolutions: 4
+# max_iterations: 10000
+# metric: "AdvancedMeanSquares"
+# num_spatial_samples: 1024
+
+transform: rigid
+rigid_metric: AdvancedMattesMutualInformation
+#rigid_metric: AdvancedNormalizedCorrelation
+rigid_init: GeometricalCenter        # OR CenterOfGravity
+n_resolutions: 4
+image_pyramid_schedule: [16,16, 8,8, 4,4, 2,2]
+max_iterations: 1000
+num_spatial_samples: 20000
+max_sampling_attempts: 200
+new_samples_every_iteration: true
+
+try_rotations_deg: [0, 90, 180, 270]
+metric_goal: "min"   # "min" for MI (negative MI), "max" for correlation-like metrics
+
+keep_logs: false
+log_dir: null   # or "analysis/_reg_logs" if you want
+
+
+
