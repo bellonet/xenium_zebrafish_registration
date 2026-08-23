@@ -1203,6 +1203,12 @@ def unify_individual_fish(suffixes: List[str], input_paths: List[str],
     """Save all-channel fish crops with global slice numbering across runs, skipping DELETE_SLICES."""
     logging.info("Step 6 (unify): Building unified individual_fish_2d across runs")
 
+    import shutil
+    unified_dir = os.path.join(ANALYSIS_DIR, INDIVIDUAL_FISH_DIR)
+    if os.path.exists(unified_dir):
+        shutil.rmtree(unified_dir)
+        logging.info(f"Cleared {unified_dir}")
+
     ordered = determine_run_order(suffixes)
     suffix_to_input = dict(zip(suffixes, input_paths))
 
@@ -1220,7 +1226,6 @@ def unify_individual_fish(suffixes: List[str], input_paths: List[str],
         offsets[s] = cum
         cum += max_tiles[s]
 
-    unified_dir  = os.path.join(ANALYSIS_DIR, INDIVIDUAL_FISH_DIR)
     mapping_rows = []
 
     for s in ordered:
