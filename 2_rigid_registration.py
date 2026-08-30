@@ -6,6 +6,11 @@ Rigid 2D registration of individual fish slices (reads directly from script 1 ou
 Input:  analysis/individual_fish_2d/{fish}/c{ch}/{global_num}_{run}_{tile}.tif
 Output: analysis/2_registered/{fish}/c{ch}/{global_num}.tif
         analysis/2_registered/{fish}/rigid_3d_c{ch}.tif
+        analysis/2_registered/{fish}/seg_cells/{gnum}.tif   (per-cell RGB, hue from type)
+        analysis/2_registered/{fish}/seg_nuclei/{gnum}.tif  (per-nucleus RGB, hue from type)
+        analysis/2_registered/{fish}/tissue_map/{gnum}.tif  (uniform flat colour per type)
+        analysis/2_registered/{fish}/tissue_mask/{gnum}.tif (binary: any cell=255)
+        analysis/2_registered/{fish}/per_gene/{gene}.tif    (3D gene density stack)
 
 Strategy: DAPI drives registration; same transform applied to all channels.
 Propagates outward from the middle reference slice so drift accumulates
@@ -18,9 +23,10 @@ Gaps: zero-filled frames written for every integer up to the last slice
 so ImageJ frame N = global_num N.
 
 Usage:
-  python 2_rigid_registration.py
-  python 2_rigid_registration.py --fish 1
-  python 2_rigid_registration.py --from-step stack
+  python 2_rigid_registration.py                              # all steps, all fish
+  python 2_rigid_registration.py --fish 1                    # all steps, fish 1
+  python 2_rigid_registration.py --steps segmentation stack  # only those two steps
+  python 2_rigid_registration.py --steps per_gene --fish 2   # per_gene, fish 2 only
 """
 
 import os, gc, glob, json, re, argparse, logging, math
@@ -457,19 +463,73 @@ def _build_label_lut(run: str, annotations: Dict[str, str],
     return lut
 
 
+def _build_type_lut(run: str, annotations: Dict[str, str],
+                    hues: Dict[str, float]) -> np.ndarray:
+    """Return uint8 array shape (N+1, 3): index = zarr label → uniform type RGB.
+    Same cell type → exactly the same flat colour (S=0.85, V=0.90), no per-cell jitter.
+    Uses the same hue assignments as _build_label_lut for visual consistency.
+    Unannotated cells get dark grey (60, 60, 60); background (label=0) is black.
+    """
+    import colorsys
+    parquet = os.path.join(DATA_DIR, RUN_FOLDERS[run], 'cells.parquet')
+    df = pd.read_parquet(parquet, columns=['cell_id'])
+    df['cell_id'] = df['cell_id'].astype(str)
+
+    n   = len(df)
+    lut = np.full((n + 1, 3), 60, dtype=np.uint8)
+    lut[0] = 0
+
+    bare_annot = {k.split('_', 1)[-1] if '_' in k else k: v
+                  for k, v in annotations.items()}
+
+    # Pre-compute one fixed RGB per cell type
+    type_rgb: Dict[str, Tuple[int, int, int]] = {}
+    for ct, hue in hues.items():
+        r, g, b = colorsys.hsv_to_rgb(hue, 0.85, 0.90)
+        type_rgb[ct] = (int(r * 255), int(g * 255), int(b * 255))
+
+    for zarr_id, cell_id in enumerate(df['cell_id'], start=1):
+        ct = annotations.get(cell_id) or bare_annot.get(cell_id)
+        if ct and ct in type_rgb:
+            lut[zarr_id] = type_rgb[ct]
+    return lut
+
+
+def _build_binary_lut(run: str) -> np.ndarray:
+    """Return uint8 array shape (N+1,): all non-zero labels → 255 (white); background → 0.
+    Used to produce a clean binary tissue-presence mask for registration.
+    """
+    parquet = os.path.join(DATA_DIR, RUN_FOLDERS[run], 'cells.parquet')
+    df = pd.read_parquet(parquet, columns=['cell_id'])
+    n   = len(df)
+    lut = np.full(n + 1, 255, dtype=np.uint8)
+    lut[0] = 0
+    return lut
+
+
 # ── step: segmentation ────────────────────────────────────────────────────────
 
 def step_segmentation(fish_ids: List[int]) -> None:
-    """Render cell-type-coloured segmentation images in registered space.
+    """Render segmentation images in registered space.
 
-    For each slice produces two 3-channel (RGB) TIFs:
-      analysis/2_registered/{fish}/seg_cells/{gnum}.tif
-      analysis/2_registered/{fish}/seg_nuclei/{gnum}.tif
+    For each slice produces four output TIFs:
+      seg_cells/{gnum}.tif    — per-cell RGB, hue from cell type (with S/V jitter)
+      seg_nuclei/{gnum}.tif   — same as above but from nucleus mask
+      tissue_map/{gnum}.tif   — uniform flat colour per cell type, no per-cell jitter
+      tissue_mask/{gnum}.tif  — binary single-channel: any cell = 255, background = 0
 
-    Colours are consistent across both images: same cell type → same colour.
-    The same DV rotation + elastix rigid transform used for fluorescence is applied
-    so the segmentation overlays perfectly with the registered DAPI.
+    All four share the same hue assignments per cell type for visual consistency.
+    The same DV rotation + elastix rigid transform as fluorescence is applied to
+    each so they overlay perfectly with the registered DAPI.
     """
+    # Output modes: (subdir, zarr_key ('cells'|'nuclei'), lut_type, n_channels)
+    _SEG_OUTPUTS = [
+        ('seg_cells',   'cells',  'label',  3),
+        ('seg_nuclei',  'nuclei', 'label',  3),
+        ('tissue_map',  'cells',  'type',   3),
+        ('tissue_mask', 'cells',  'binary', 1),
+    ]
+
     annots = dict(zip(
         pd.read_csv(ANNOT_CSV)['cell_id'].astype(str),
         pd.read_csv(ANNOT_CSV)['leiden10annots'].astype(str)
@@ -497,30 +557,39 @@ def step_segmentation(fish_ids: List[int]) -> None:
         canvas_w    = meta['canvas_w']
         slices_meta = meta['slices']
 
-        # Open zarr + build LUT once per run
-        zarr_handles: Dict[str, object] = {}
-        luts: Dict[str, np.ndarray]     = {}
+        # Open zarr + build all three LUT types once per run
+        zarr_handles: Dict[str, object]             = {}
+        all_luts:     Dict[str, Dict[str, np.ndarray]] = {}
         for run in RUN_FOLDERS:
             try:
                 zarr_handles[run] = _open_zarr_masks(run)
-                luts[run]         = _build_label_lut(run, annots, hues)
-                logging.info(f'  Run {run}: zarr ready, {len(luts[run])} LUT entries')
+                all_luts[run] = {
+                    'label':  _build_label_lut(run, annots, hues),
+                    'type':   _build_type_lut(run, annots, hues),
+                    'binary': _build_binary_lut(run),
+                }
+                logging.info(f'  Run {run}: zarr ready, {len(all_luts[run]["label"])} LUT entries')
             except Exception as exc:
                 logging.warning(f'  Run {run}: skipped ({exc})')
 
         first, last = _c0_frame_range(fish)
-        zero_rgb = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
 
-        for seg_type, zarr_idx in ZARR_MASK_IDX.items():
-            out_dir = os.path.join(OUT_DIR, str(fish), f'seg_{seg_type}')
+        for subdir, zarr_key, lut_type, n_ch in _SEG_OUTPUTS:
+            zarr_idx = ZARR_MASK_IDX[zarr_key]
+            out_dir  = os.path.join(OUT_DIR, str(fish), subdir)
             os.makedirs(out_dir, exist_ok=True)
+
+            zero_frame = (np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+                          if n_ch == 3
+                          else np.zeros((canvas_h, canvas_w), dtype=np.uint8))
 
             for gnum in range(first, last + 1):
                 out_path = os.path.join(out_dir, f'{gnum}.tif')
                 sm = slices_meta.get(str(gnum))
 
                 if sm is None:
-                    tifffile.imwrite(out_path, zero_rgb, photometric='rgb')
+                    tifffile.imwrite(out_path, zero_frame,
+                                     photometric='rgb' if n_ch == 3 else 'minisblack')
                     continue
 
                 rows = summary_df[
@@ -528,13 +597,14 @@ def step_segmentation(fish_ids: List[int]) -> None:
                     (summary_df['global_slice_num'] == gnum)
                 ]
                 if len(rows) == 0 or str(int(rows.iloc[0]['run'])) not in zarr_handles:
-                    tifffile.imwrite(out_path, zero_rgb, photometric='rgb')
+                    tifffile.imwrite(out_path, zero_frame,
+                                     photometric='rgb' if n_ch == 3 else 'minisblack')
                     continue
 
                 row = rows.iloc[0]
                 run = str(int(row['run']))
                 z   = zarr_handles[run]
-                lut = luts[run]
+                lut = all_luts[run][lut_type]
 
                 # Crop zarr mask to this slice's bbox
                 r0, r1 = int(row['bbox_global_min_row']), int(row['bbox_global_max_row'])
@@ -543,41 +613,48 @@ def step_segmentation(fish_ids: List[int]) -> None:
                 mask = np.array(z['masks'][zarr_idx][max(0,r0):min(mH,r1),
                                                       max(0,c0):min(mW,c1)])
 
-                # Render label → RGB, place on canvas
-                clipped   = np.clip(mask, 0, len(lut) - 1)
-                rgb_crop  = lut[clipped].astype(np.float32)           # (H_crop, W_crop, 3)
+                # Render label → pixel values; place on canvas
+                clipped = np.clip(mask, 0, len(lut) - 1)
+                crop    = lut[clipped].astype(np.float32)   # (H, W) or (H, W, 3)
 
-                canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.float32)
-                ph = min(rgb_crop.shape[0], sm['orig_h'])
-                pw = min(rgb_crop.shape[1], sm['orig_w'])
+                canvas = np.zeros((canvas_h, canvas_w) if n_ch == 1
+                                  else (canvas_h, canvas_w, 3), dtype=np.float32)
+                ph = min(crop.shape[0], sm['orig_h'])
+                pw = min(crop.shape[1], sm['orig_w'])
                 canvas[sm['pad_top']:sm['pad_top']+ph,
-                       sm['pad_left']:sm['pad_left']+pw] = rgb_crop[:ph, :pw]
+                       sm['pad_left']:sm['pad_left']+pw] = crop[:ph, :pw]
 
-                # DV rotation (per colour channel)
+                # DV rotation
                 dv = sm['dv_angle_deg']
                 if abs(dv) >= 1.0:
-                    canvas = np.stack([
-                        nd_rotate(canvas[..., ch], dv, reshape=False, cval=0.0, order=1)
-                        for ch in range(3)
-                    ], axis=-1)
+                    if n_ch == 3:
+                        canvas = np.stack([
+                            nd_rotate(canvas[..., c], dv, reshape=False, cval=0.0, order=1)
+                            for c in range(3)
+                        ], axis=-1)
+                    else:
+                        canvas = nd_rotate(canvas, dv, reshape=False, cval=0.0, order=1)
 
-                # Elastix rigid transform (per colour channel)
+                # Elastix rigid transform
                 tf_file = sm.get('elastix_file')
                 if tf_file is not None:
                     tf_path = os.path.join(OUT_DIR, str(fish), tf_file)
                     if os.path.exists(tf_path):
                         tp = itk.ParameterObject.New()
                         tp.ReadParameterFile(tf_path)
-                        canvas = np.stack([
-                            apply_transform_to(canvas[..., ch], tp)
-                            for ch in range(3)
-                        ], axis=-1)
+                        if n_ch == 3:
+                            canvas = np.stack([
+                                apply_transform_to(canvas[..., c], tp)
+                                for c in range(3)
+                            ], axis=-1)
+                        else:
+                            canvas = apply_transform_to(canvas, tp)
 
-                # Save as uint8 (H, W, 3) — smallest correct dtype for 34 cell types
                 out_arr = np.clip(canvas, 0, 255).astype(np.uint8)
-                tifffile.imwrite(out_path, out_arr, photometric='rgb')
+                tifffile.imwrite(out_path, out_arr,
+                                 photometric='rgb' if n_ch == 3 else 'minisblack')
 
-            logging.info(f'  seg_{seg_type}: done')
+            logging.info(f'  {subdir}: done')
 
         del zarr_handles; gc.collect()
 
@@ -608,9 +685,9 @@ def step_stack(fish_ids: List[int]) -> None:
             logging.info(f"  c{ch}: shape {vol.shape}  global_nums {gnums[0]}–{gnums[-1]}  (frame 1 = global_num 1)")
             del frames, vol; gc.collect()
 
-        # Segmentation — uint8 RGB stacks (Z, H, W, 3), readable in Fiji as colour
-        for seg_type in ('cells', 'nuclei'):
-            seg_dir = os.path.join(OUT_DIR, str(fish), f'seg_{seg_type}')
+        # Segmentation — RGB stacks (seg_cells, seg_nuclei, tissue_map) → (Z, H, W, 3)
+        for seg_dir_name in ('seg_cells', 'seg_nuclei', 'tissue_map'):
+            seg_dir = os.path.join(OUT_DIR, str(fish), seg_dir_name)
             if not os.path.isdir(seg_dir):
                 continue
             files = sorted(
@@ -621,11 +698,27 @@ def step_stack(fish_ids: List[int]) -> None:
                 continue
             frames = [tifffile.imread(f) for f in files]   # each (H, W, 3) uint8
             vol = np.stack(frames, axis=0)                  # (Z, H, W, 3)
-            out_path = os.path.join(OUT_DIR, str(fish), f'seg_{seg_type}_3d.tif')
+            out_path = os.path.join(OUT_DIR, str(fish), f'{seg_dir_name}_3d.tif')
             tifffile.imwrite(out_path, vol, photometric='rgb')
             gnums = [int(os.path.splitext(os.path.basename(f))[0]) for f in files]
-            logging.info(f"  seg_{seg_type}: shape {vol.shape}  slices {gnums[0]}–{gnums[-1]}")
+            logging.info(f"  {seg_dir_name}: shape {vol.shape}  slices {gnums[0]}–{gnums[-1]}")
             del frames, vol; gc.collect()
+
+        # Tissue mask — single-channel uint8 stack → (Z, H, W)
+        mask_dir = os.path.join(OUT_DIR, str(fish), 'tissue_mask')
+        if os.path.isdir(mask_dir):
+            files = sorted(
+                glob.glob(os.path.join(mask_dir, '*.tif')),
+                key=lambda f: int(os.path.splitext(os.path.basename(f))[0])
+            )
+            if files:
+                frames = [tifffile.imread(f) for f in files]  # each (H, W) uint8
+                vol = np.stack(frames, axis=0)                 # (Z, H, W)
+                out_path = os.path.join(OUT_DIR, str(fish), 'tissue_mask_3d.tif')
+                tifffile.imwrite(out_path, vol)
+                gnums = [int(os.path.splitext(os.path.basename(f))[0]) for f in files]
+                logging.info(f"  tissue_mask: shape {vol.shape}  slices {gnums[0]}–{gnums[-1]}")
+                del frames, vol; gc.collect()
 
 
 # ── step: per_gene ────────────────────────────────────────────────────────────
@@ -884,8 +977,9 @@ def main() -> None:
         description='Rigid 2D registration of preprocessed fish slices.'
     )
     parser.add_argument(
-        '--from-step', choices=STEPS, default='register', metavar='STEP',
-        help=f'Resume from this step. Choices: {", ".join(STEPS)}'
+        '--steps', nargs='+', choices=STEPS, default=STEPS, metavar='STEP',
+        help=f'Steps to run (space-separated). Choices: {", ".join(STEPS)}. '
+             f'Default: all steps.'
     )
     parser.add_argument(
         '--fish', type=int, default=None,
@@ -906,16 +1000,13 @@ def main() -> None:
             if os.path.isdir(os.path.join(SRC_DIR, d)) and d.isdigit()
         )
     logging.info(f"Fish to process: {fish_ids}")
+    logging.info(f"Steps: {args.steps}")
 
-    from_idx = STEPS.index(args.from_step)
-    if from_idx <= STEPS.index('register'):
-        step_register(fish_ids)
-    if from_idx <= STEPS.index('segmentation'):
-        step_segmentation(fish_ids)
-    if from_idx <= STEPS.index('stack'):
-        step_stack(fish_ids)
-    if from_idx <= STEPS.index('per_gene'):
-        step_per_gene(fish_ids, sigma_um=args.sigma_um)
+    run = set(args.steps)
+    if 'register'     in run: step_register(fish_ids)
+    if 'segmentation' in run: step_segmentation(fish_ids)
+    if 'stack'        in run: step_stack(fish_ids)
+    if 'per_gene'     in run: step_per_gene(fish_ids, sigma_um=args.sigma_um)
 
     logging.info(f"Done. Output: {OUT_DIR}")
 
