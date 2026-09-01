@@ -20,12 +20,10 @@ from collections import deque
 import numpy as np
 import pandas as pd
 import tifffile
-from scipy.ndimage import label as ndimage_label, find_objects, binary_dilation, rotate as nd_rotate
+from scipy.ndimage import label as ndimage_label, find_objects, rotate as nd_rotate
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
-from skimage.filters import threshold_otsu
-from skimage.measure import regionprops, label as measure_label
 from PIL import Image, ImageDraw, ImageFont
 
 warnings.filterwarnings('ignore', message='.*OME series cannot read multi-file pyramids.*')
@@ -59,13 +57,7 @@ MAX_WIDTH         = 14000
 MIN_MAX_INTENSITY = 500
 MIN_VERTICAL_OVERLAP = 100
 
-DILATION_ITER      = 30
 BBOX_MARGIN        = 5
-MIN_LABEL_SIZE     = 7000
-MIN_BBOX_AREA      = 100000
-MERGE_DISTANCE     = 1000
-MIN_FILL_RATIO     = 0.20
-MERGE_DISTANCE_LARGE = 300
 
 XENIUM_PX_PER_UM   = 4.705882
 CELL_EPS_UM        = 30
@@ -257,93 +249,6 @@ def extract_tiles_dapi(input_path: str, output_base: str, dapi_channel: int = DA
 
 
 # ── Step 2: Detect bboxes in tiles ────────────────────────────────────────────
-
-def process_tile_for_bboxes(tile: np.ndarray, dilation_iter: int) -> List[Dict]:
-    thr = threshold_otsu(tile)
-    mask = binary_dilation(tile > thr, iterations=dilation_iter)
-    lbl = measure_label(mask)
-    detections = []
-    for rp in regionprops(lbl):
-        if rp.area < MIN_LABEL_SIZE:
-            continue
-        min_r, min_c, max_r, max_c = rp.bbox
-        fill_ratio = rp.area / max((max_r - min_r) * (max_c - min_c), 1)
-        if fill_ratio < MIN_FILL_RATIO:
-            logging.info(f"  Discarding sparse object label={rp.label} fill={fill_ratio:.2f}")
-            continue
-        detections.append({'label': rp.label, 'bbox': (min_r, min_c, max_r, max_c), 'area': rp.area})
-    return detections
-
-
-def _bbox_gap(a, b) -> float:
-    dy = max(0, max(a[0], b[0]) - min(a[2], b[2]))
-    dx = max(0, max(a[1], b[1]) - min(a[3], b[3]))
-    return math.sqrt(dy * dy + dx * dx)
-
-
-def merge_small_bboxes(detections: List[Dict],
-                       min_area: int = MIN_BBOX_AREA,
-                       max_dist: float = MERGE_DISTANCE,
-                       max_dist_large: float = MERGE_DISTANCE_LARGE) -> List[Dict]:
-    if not detections:
-        return detections
-    large = [d for d in detections if (d['bbox'][2]-d['bbox'][0])*(d['bbox'][3]-d['bbox'][1]) >= min_area]
-    small = [d for d in detections if (d['bbox'][2]-d['bbox'][0])*(d['bbox'][3]-d['bbox'][1]) < min_area]
-
-    def _merge(a, b):
-        return {'label': a['label'], 'area': a['area'] + b['area'],
-                'bbox': (min(a['bbox'][0], b['bbox'][0]), min(a['bbox'][1], b['bbox'][1]),
-                         max(a['bbox'][2], b['bbox'][2]), max(a['bbox'][3], b['bbox'][3]))}
-
-    # Pass 0: merge adjacent large bboxes
-    changed = True
-    while changed and len(large) > 1:
-        changed = False
-        best_pair, best_dist = None, float('inf')
-        for i in range(len(large)):
-            for j in range(i + 1, len(large)):
-                d = _bbox_gap(large[i]['bbox'], large[j]['bbox'])
-                if d < best_dist:
-                    best_dist = d; best_pair = (i, j)
-        if best_pair and best_dist <= max_dist_large:
-            i, j = best_pair
-            logging.info(f"Pass0: merged large fragments label={large[i]['label']} + label={large[j]['label']}")
-            merged = _merge(large[i], large[j])
-            large = [large[k] for k in range(len(large)) if k not in (i, j)] + [merged]
-            changed = True
-
-    # Pass 1: merge small into nearest large
-    unmerged_small = []
-    for s in small:
-        best_idx, best_dist = -1, float('inf')
-        for i, lg in enumerate(large):
-            d = _bbox_gap(s['bbox'], lg['bbox'])
-            if d < best_dist:
-                best_dist = d; best_idx = i
-        if best_idx >= 0 and best_dist <= max_dist:
-            large[best_idx] = _merge(large[best_idx], s)
-        else:
-            unmerged_small.append(s)
-
-    # Pass 2: merge remaining small fragments with each other
-    changed = True
-    while changed and len(unmerged_small) > 1:
-        changed = False
-        best_pair, best_dist = None, float('inf')
-        for i in range(len(unmerged_small)):
-            for j in range(i + 1, len(unmerged_small)):
-                d = _bbox_gap(unmerged_small[i]['bbox'], unmerged_small[j]['bbox'])
-                if d < best_dist:
-                    best_dist = d; best_pair = (i, j)
-        if best_pair and best_dist <= max_dist:
-            i, j = best_pair
-            logging.info(f"Pass2: merged small fragments label={unmerged_small[i]['label']} + label={unmerged_small[j]['label']}")
-            merged = _merge(unmerged_small[i], unmerged_small[j])
-            unmerged_small = [unmerged_small[k] for k in range(len(unmerged_small)) if k not in (i, j)] + [merged]
-            changed = True
-
-    return large + unmerged_small
-
 
 def detect_bboxes_in_tiles(output_base: str, input_folder: str,
                            dapi_channel: int = DAPI_CHANNEL) -> pd.DataFrame:
@@ -1204,7 +1109,7 @@ def unify_individual_fish(suffixes: List[str], input_paths: List[str],
     logging.info("Step 6 (unify): Building unified individual_fish_2d across runs")
 
     import shutil
-    unified_dir = os.path.join(ANALYSIS_DIR, INDIVIDUAL_FISH_DIR)
+    unified_dir = os.path.join(ANALYSIS_DIR, DETECTION_SUBDIR, INDIVIDUAL_FISH_DIR)
     if os.path.exists(unified_dir):
         shutil.rmtree(unified_dir)
         logging.info(f"Cleared {unified_dir}")

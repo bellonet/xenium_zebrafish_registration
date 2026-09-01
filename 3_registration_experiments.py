@@ -7,11 +7,10 @@ then evaluates each experiment quantitatively.
 
 Experiments
 -----------
-  tissue_mask    binary cell-presence mask (any cell = 1)
-  tp63_only      tp63 gene density at sigma=3 µm  (skin-boundary ring/arc)
+  tissue_mask    cell-type label map (per-pixel leiden10annots integer ID, 0=bg)
   gene_composite tp63 + myod1 + tbxta + sox3 at sigma=3 µm
-  dapi_blend     0.5 × DAPI + 0.5 × tissue_mask
-  multi_metric   0.6 × tissue_mask + 0.4 × gene_composite
+  dapi_blend     0.5 × DAPI + 0.5 × cell_type_label
+  multi_metric   0.6 × cell_type_label + 0.4 × gene_composite
 
 Steps
 -----
@@ -19,11 +18,11 @@ Steps
   evaluate   Evaluate all experiments quantitatively and save a CSV per fish.
 
 Input:  analysis/2_registered/{fish}/
-Output: analysis/3_registered/{experiment}/{fish}/c0/{gnum}.tif
-                                               c0_3d.tif
-                                               correction_transforms.json
-                                               transforms/{gnum}.txt
-        analysis/3_registered/evaluation_fish{N}.csv
+Output: analysis/3_improved_registration/{experiment}/{fish}/c0/{gnum}.tif
+                                                      c0_3d.tif
+                                                      correction_transforms.json
+                                                      transforms/{gnum}.txt
+        analysis/improve_registration/evaluation_fish{N}.csv
 
 Usage
 -----
@@ -47,7 +46,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # ── paths ──────────────────────────────────────────────────────────────────────
 IN2_DIR      = '../analysis/2_registered'
-OUT_DIR      = '../analysis/3_registered'
+OUT_DIR      = '../analysis/3_improved_registration'
 DATA_DIR     = '../data'
 SUMMARY_GLOB = '../analysis/fish_bbox_summary_tagged_*.csv'
 
@@ -61,9 +60,9 @@ RUN_FOLDERS = {
 }
 
 STEPS       = ['register', 'evaluate']
-EXPERIMENTS = ['tissue_mask', 'tp63_only', 'gene_composite', 'dapi_blend', 'multi_metric']
+EXPERIMENTS = ['tissue_mask', 'gene_composite', 'dapi_blend', 'multi_metric']
 
-# Structural genes used in composite / tp63_only
+# Structural genes used in gene_composite / multi_metric
 COMPOSITE_GENES    = ['tp63', 'myod1', 'tbxta', 'sox3']
 COMPOSITE_SIGMA_UM = 3.0
 QV_MIN             = 20.0
@@ -133,9 +132,23 @@ def load_dapi(fish: int, gnum: int) -> Optional[np.ndarray]:
     return tifffile.imread(p).astype(np.float32) if os.path.exists(p) else None
 
 
-def load_tissue_mask(fish: int, gnum: int) -> Optional[np.ndarray]:
-    p = os.path.join(IN2_DIR, str(fish), 'tissue_mask', f'{gnum}.tif')
-    return (tifffile.imread(p) > 0).astype(np.float32) if os.path.exists(p) else None
+def load_cell_type_map(fish: int, gnum: int) -> Optional[np.ndarray]:
+    """Per-pixel cell-type grayscale image derived from tissue_map RGB.
+    tissue_map assigns each cell type a unique, evenly-spaced HSV hue (flat
+    colour per type, S=0.85 V=0.90). Converting RGB→grayscale gives a distinct,
+    physically-meaningful float value per cell type — no arbitrary ordering.
+    NCC on this image correctly rewards aligning the SAME cell-type regions."""
+    p = os.path.join(IN2_DIR, str(fish), 'tissue_map', f'{gnum}.tif')
+    if not os.path.exists(p):
+        return None
+    rgb = tifffile.imread(p)        # (H, W, 3) uint8
+    if rgb.ndim == 2:               # already grayscale (shouldn't happen)
+        gray = rgb.astype(np.float32)
+    else:
+        # Mean across channels: each hue maps to a unique grayscale value
+        gray = rgb.mean(axis=-1).astype(np.float32)
+    mx = gray.max()
+    return gray / mx if mx > 0 else gray
 
 
 # ── gene composite rendering ───────────────────────────────────────────────────
@@ -248,31 +261,28 @@ def get_reg_image(experiment: str, fish: int, gnum: int,
                   gene_cache: Optional[Dict],
                   canvas_h: int, canvas_w: int) -> Optional[np.ndarray]:
     if experiment == 'tissue_mask':
-        return load_tissue_mask(fish, gnum)
-    elif experiment == 'tp63_only':
-        return (None if gene_cache is None else
-                render_gene_composite(gnum, ['tp63'], COMPOSITE_SIGMA_UM,
-                                      gene_cache, canvas_h, canvas_w))
+        # Cell-type label map (not binary — each pixel = leiden10annots integer ID)
+        return load_cell_type_map(fish, gnum)
     elif experiment == 'gene_composite':
         return (None if gene_cache is None else
                 render_gene_composite(gnum, COMPOSITE_GENES, COMPOSITE_SIGMA_UM,
                                       gene_cache, canvas_h, canvas_w))
     elif experiment == 'dapi_blend':
-        dapi = load_dapi(fish, gnum)
-        mask = load_tissue_mask(fish, gnum)
-        if dapi is None or mask is None:
+        dapi  = load_dapi(fish, gnum)
+        ctype = load_cell_type_map(fish, gnum)
+        if dapi is None or ctype is None:
             return None
         mx = dapi.max()
-        return 0.5 * (dapi / mx if mx > 0 else dapi) + 0.5 * mask
+        return 0.5 * (dapi / mx if mx > 0 else dapi) + 0.5 * ctype
     elif experiment == 'multi_metric':
         if gene_cache is None:
             return None
-        mask = load_tissue_mask(fish, gnum)
-        comp = render_gene_composite(gnum, COMPOSITE_GENES, COMPOSITE_SIGMA_UM,
-                                     gene_cache, canvas_h, canvas_w)
-        if mask is None or comp is None:
+        ctype = load_cell_type_map(fish, gnum)
+        comp  = render_gene_composite(gnum, COMPOSITE_GENES, COMPOSITE_SIGMA_UM,
+                                      gene_cache, canvas_h, canvas_w)
+        if ctype is None or comp is None:
             return None
-        return 0.6 * mask + 0.4 * comp
+        return 0.6 * ctype + 0.4 * comp
     return None
 
 
@@ -362,7 +372,7 @@ def run_second_pass(fish: int, gnums: List[int],
 def _run_one_experiment(experiment: str, fish: int,
                         summary_df: pd.DataFrame,
                         run_tx: Optional[Dict[str, pd.DataFrame]]) -> None:
-    needs_genes  = experiment in ('tp63_only', 'gene_composite', 'multi_metric')
+    needs_genes  = experiment in ('gene_composite', 'multi_metric')
     out_fish_dir = os.path.join(OUT_DIR, experiment, str(fish))
     out_slices_dir = os.path.join(out_fish_dir, 'c0')
     tf_dir         = os.path.join(out_fish_dir, 'transforms')
@@ -454,7 +464,7 @@ def _run_one_experiment(experiment: str, fish: int,
 
 def step_register(fish_ids: List[int], experiments: List[str],
                   summary_df: pd.DataFrame) -> None:
-    needs_genes = any(e in experiments for e in ('tp63_only', 'gene_composite', 'multi_metric'))
+    needs_genes = any(e in experiments for e in ('gene_composite', 'multi_metric'))
     run_tx: Optional[Dict[str, pd.DataFrame]] = None
     if needs_genes:
         needed_runs = summary_df[summary_df['fish_name'].isin(fish_ids)]['run'].unique()
@@ -520,7 +530,9 @@ def _apply_correction(arr: np.ndarray, tf_txt: str) -> np.ndarray:
 
 
 def _load_corrected_tissue(tf_dir: str, baseline_tissue_dir: str) -> Optional[np.ndarray]:
-    """Load script-2 tissue_mask slices and apply this experiment's corrections."""
+    """Load script-2 tissue_map slices (RGB → grayscale) and apply corrections.
+    Each cell type has a unique hue → unique grayscale value. NCC on this image
+    correctly rewards aligning the same cell-type regions (better than binary)."""
     files = sorted(glob.glob(os.path.join(baseline_tissue_dir, '*.tif')),
                    key=lambda f: int(os.path.splitext(os.path.basename(f))[0]))
     if not files:
@@ -528,8 +540,13 @@ def _load_corrected_tissue(tf_dir: str, baseline_tissue_dir: str) -> Optional[np
     frames = []
     for f in files:
         gnum = int(os.path.splitext(os.path.basename(f))[0])
-        arr  = tifffile.imread(f).astype(np.float32)
-        tf   = os.path.join(tf_dir, f'{gnum}.txt')
+        raw  = tifffile.imread(f)
+        # Convert RGB tissue_map → grayscale (unique value per cell type via hue)
+        if raw.ndim == 3:
+            arr = raw.mean(axis=-1).astype(np.float32)
+        else:
+            arr = raw.astype(np.float32)
+        tf = os.path.join(tf_dir, f'{gnum}.txt')
         if os.path.exists(tf):
             try:
                 arr = _apply_correction(arr, tf)
@@ -581,17 +598,17 @@ def step_evaluate(fish_ids: List[int], experiments: List[str]) -> None:
         logging.info(f'=== Evaluating fish {fish} ===')
         rows = []
 
-        # Baseline
+        # Baseline — use tissue_map (grayscale) as independent tissue metric
         logging.info('  Baseline (script 2 rigid)...')
         rows.append(_eval_one(
             name       = 'script2_baseline',
             dapi_dir   = os.path.join(IN2_DIR, str(fish), 'c0'),
-            tissue_dir = os.path.join(IN2_DIR, str(fish), 'tissue_mask'),
+            tissue_dir = os.path.join(IN2_DIR, str(fish), 'tissue_map'),
             tf_json    = None,
         ))
 
-        # Experiments — apply correction transforms to tissue_mask for fair ncc_tissue
-        baseline_tissue_dir = os.path.join(IN2_DIR, str(fish), 'tissue_mask')
+        # Experiments — apply correction transforms to tissue_map for fair ncc_tissue
+        baseline_tissue_dir = os.path.join(IN2_DIR, str(fish), 'tissue_map')
         for exp in experiments:
             logging.info(f'  {exp}...')
             tf_dir  = os.path.join(OUT_DIR, exp, str(fish), 'transforms')
@@ -603,11 +620,11 @@ def step_evaluate(fish_ids: List[int], experiments: List[str]) -> None:
                 tf_json    = tf_json,
             )
             if os.path.isdir(tf_dir):
-                logging.info(f'    applying correction transforms to tissue_mask...')
-                tmask = _load_corrected_tissue(tf_dir, baseline_tissue_dir)
-                r['ncc_tissue'] = _mean_ncc_adj(tmask) if tmask is not None else None
-                if tmask is not None:
-                    del tmask
+                logging.info(f'    applying correction transforms to cell_type_label...')
+                ctype = _load_corrected_tissue(tf_dir, baseline_tissue_dir)
+                r['ncc_tissue'] = _mean_ncc_adj(ctype) if ctype is not None else None
+                if ctype is not None:
+                    del ctype
             else:
                 r['ncc_tissue'] = None
                 logging.warning(f'  {exp}: transforms dir missing')
@@ -643,7 +660,7 @@ def step_evaluate(fish_ids: List[int], experiments: List[str]) -> None:
             )
         print(f'\n  ◀ = best  |  smooth_px: lower=better; rest: higher=better')
         print(f'  ncc_dapi     adjacent-slice NCC on DAPI  (biased toward script-2 baseline)')
-        print(f'  ncc_tissue   adjacent-slice NCC on tissue_mask after applying corrections')
+        print(f'  ncc_tissue   adjacent-slice NCC on cell_type_label map after applying corrections')
         print(f'  smooth_px    mean |Δtranslation| px between consecutive transforms')
         print(f'  z_sharp_dapi mean Sobel gradient of DAPI Z max-projection')
         print(f'{"═"*W}\n')
