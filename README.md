@@ -4,7 +4,14 @@ Registers Xenium spatial transcriptomics data from multiple zebrafish tails into
 
 ## Requirements
 
-Python environment managed with uv. Always run scripts with `.venv/bin/python3`, not bare `python3`.
+Python 3.13, environment managed with [uv](https://github.com/astral-sh/uv).
+
+```bash
+uv venv
+uv pip install -r requirements.txt
+```
+
+Always run scripts with `.venv/bin/python3`, not bare `python3`.
 
 Data lives in `../data/`, outputs go to `../analysis/`.
 

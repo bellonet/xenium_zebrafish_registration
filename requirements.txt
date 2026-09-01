@@ -1,0 +1,12 @@
+numpy==2.5.0
+pandas==3.0.3
+scipy==1.18.0
+tifffile==2026.6.1
+itk==5.4.6
+itk-elastix==0.25.3
+pyarrow==24.0.0
+anndata==0.13.2
+Pillow>=10.0
+scikit-image==0.26.0
+matplotlib==3.11.0
+tabulate
