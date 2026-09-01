@@ -10,3 +10,4 @@ Pillow>=10.0
 scikit-image==0.26.0
 matplotlib==3.11.0
 tabulate
+pytest
