@@ -11,25 +11,30 @@ uv venv
 uv pip install -r requirements.txt
 ```
 
-Always run scripts with `.venv/bin/python3`, not bare `python3`.
+Always run scripts with `python3`, not bare `python3`.
 
 Data lives in `../data/`, outputs go to `../analysis/`.
 
 ## The pipeline
 
-Run the scripts in order. Use `run_pipeline.sh` to chain them automatically.
+Run with Snakemake from the repo root:
 
 ```bash
-bash run_pipeline.sh
+snakemake -j 6          # run pipeline, up to 6 parallel jobs
+snakemake -j 6 -n       # dry-run: print what would be done
+snakemake -j 6 -p       # also print each shell command as it runs
 ```
 
-Or run individually:
+Scripts 2 and 3 are parallelised by fish and by experiment automatically.
+Logs go to `../analysis/logs/`. Script 5 is not part of the workflow — run it manually (see below).
+
+To run scripts individually:
 
 ```bash
-.venv/bin/python3 1_crop_and_tag_2d_slices.py --from-step tiles
-.venv/bin/python3 2_rigid_registration.py
-.venv/bin/python3 3_registration_experiments.py
-.venv/bin/python3 4_cross_fish_registration.py
+python3 1_crop_and_tag_2d_slices.py --from-step tiles
+python3 2_rigid_registration.py
+python3 3_registration_experiments.py
+python3 4_cross_fish_registration.py
 ```
 
 ---
@@ -122,7 +127,7 @@ For points: exact coordinate math, no interpolation at any step.
 Config block at the top of the file. Set `FISH`, `RUN`, `SCRIPT3_EXP`, `SCRIPT4_EXP`, and the `APPLY_TO_*` flags, then run:
 
 ```bash
-.venv/bin/python3 5_apply_registration.py
+python3 5_apply_registration.py
 ```
 
 Output: `analysis/5_applied/`

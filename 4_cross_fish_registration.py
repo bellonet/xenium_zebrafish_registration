@@ -44,7 +44,7 @@ Usage
   python 4_cross_fish_registration.py --reference 2
 """
 
-import csv, gc, json, argparse, logging, math, os
+import csv, gc, json, argparse, logging, math, os, shutil
 from itertools import product
 from typing import Dict, List, Optional, Tuple
 
@@ -72,7 +72,11 @@ NUM_CHANNELS  = 4
 CANVAS_PAD    = 8
 
 # ── experiment axes ────────────────────────────────────────────────────────────
-DRIVING_OPTIONS   = ['dapi', 'dapi_blend', 'cell_type_map']
+# cell_type_map was evaluated and excluded: it aligns biological structure slightly
+# better than plain dapi (rigid), but loses on all fluorescence channel metrics and
+# is strictly dominated by dapi_blend_rigid_affine on every measure. Not worth the
+# extra running time (MI metric is slower than NCC).
+DRIVING_OPTIONS   = ['dapi', 'dapi_blend']
 STAGES_OPTIONS    = ['rigid', 'rigid_affine']
 Z_SPACING_OPTIONS = [10]   # confirmed 10 µm z-spacing
 STEPS             = ['register', 'evaluate']
@@ -430,6 +434,86 @@ def _save_outputs_for_fish(fish: int, ref_fish: int, name: str,
 # STEP: REGISTER
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _crop_experiment_outputs(fish_ids: List[int], name: str,
+                              ref_fish: int, pad: int = 32) -> None:
+    """Compute union content bounding box across all fish in one experiment,
+    crop all output TIFs to that box, and store canvas_crop_box in transform.json."""
+    exp_dir = os.path.join(OUT_DIR, name)
+    r0_min: float = float('inf'); c0_min: float = float('inf')
+    r1_max: float = 0;            c1_max: float = 0
+    H = W = None
+
+    for fish in fish_ids:
+        p = os.path.join(exp_dir, str(fish), 'c0.tif')
+        if not os.path.exists(p):
+            continue
+        vol = tifffile.imread(p)
+        if H is None:
+            H, W = vol.shape[1], vol.shape[2]
+        thresh = 0.01 * float(vol.max()) if vol.max() > 0 else 0.0
+        mask   = np.any(vol > thresh, axis=0)   # (H, W)
+        rows   = np.where(np.any(mask, axis=1))[0]
+        cols   = np.where(np.any(mask, axis=0))[0]
+        del vol
+        if len(rows) == 0:
+            continue
+        r0_min = min(r0_min, float(rows[0]))
+        r1_max = max(r1_max, float(rows[-1]) + 1.0)
+        c0_min = min(c0_min, float(cols[0]))
+        c1_max = max(c1_max, float(cols[-1]) + 1.0)
+
+    if H is None or r0_min == float('inf'):
+        logging.warning(f'  {name}: could not compute crop box — skipping crop')
+        return
+
+    r0 = max(0, int(r0_min) - pad);  r1 = min(H, int(r1_max) + pad)
+    c0 = max(0, int(c0_min) - pad);  c1 = min(W, int(c1_max) + pad)
+    logging.info(f'  {name}: canvas_crop_box rows {r0}:{r1} cols {c0}:{c1}')
+
+    for fish in fish_ids:
+        fish_dir = os.path.join(exp_dir, str(fish))
+
+        # Float32 channels
+        for ch in range(NUM_CHANNELS):
+            p = os.path.join(fish_dir, f'c{ch}.tif')
+            if not os.path.exists(p):
+                continue
+            vol = tifffile.imread(p)
+            tifffile.imwrite(p, vol[:, r0:r1, c0:c1].astype(np.float32))
+            del vol
+
+        # uint8 single-channel (cell_type_label)
+        p = os.path.join(fish_dir, 'cell_type_label.tif')
+        if os.path.exists(p):
+            vol = tifffile.imread(p)
+            tifffile.imwrite(p, vol[:, r0:r1, c0:c1].astype(np.uint8))
+            del vol
+
+        # uint8 RGB (seg_cells, seg_nuclei) — (Z, H, W, 3) or (Z, H, W)
+        for seg in ('seg_cells.tif', 'seg_nuclei.tif'):
+            p = os.path.join(fish_dir, seg)
+            if not os.path.exists(p):
+                continue
+            vol = tifffile.imread(p)
+            if vol.ndim == 4:
+                tifffile.imwrite(p, vol[:, r0:r1, c0:c1, :], photometric='rgb')
+            else:
+                tifffile.imwrite(p, vol[:, r0:r1, c0:c1].astype(np.uint8))
+            del vol
+
+        # Update transform.json
+        tf_path = os.path.join(fish_dir, 'transform.json')
+        if os.path.exists(tf_path):
+            with open(tf_path) as fh:
+                tf = json.load(fh)
+            tf['canvas_crop_box'] = {'row0': r0, 'col0': c0, 'row1': r1, 'col1': c1}
+            with open(tf_path, 'w') as fh:
+                json.dump(tf, fh, indent=2)
+
+        gc.collect()
+    logging.info(f'  {name}: crop complete')
+
+
 def step_register(fish_ids: List[int], ref_fish: int,
                   driving_opts: List[str], stages_opts: List[str],
                   z_spacing_opts: List[int]) -> None:
@@ -483,6 +567,17 @@ def step_register(fish_ids: List[int], ref_fish: int,
 
         del ref_drv_canvas, ref_itk; gc.collect()
         logging.info(f'  {name}: complete')
+        logging.info(f'  Cropping {name} outputs to content bounding box ...')
+        _crop_experiment_outputs(fish_ids, name, ref_fish)
+
+    # Delete script-2 channel stacks c1–c3 — registered versions now live in 4_registered
+    logging.info('Cleaning up script-2 c1–c3 stacks ...')
+    for fish in fish_ids:
+        for ch in (1, 2, 3):
+            _p = os.path.join(IN2_DIR, str(fish), f'rigid_3d_c{ch}.tif')
+            if os.path.exists(_p):
+                os.remove(_p)
+                logging.info(f'  Deleted {_p}')
 
 
 # ══════════════════════════════════════════════════════════════════════════════

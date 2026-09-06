@@ -33,7 +33,7 @@ Usage
   python 3_registration_experiments.py          # all steps, all experiments, all fish
 """
 
-import csv, gc, glob, json, math, argparse, logging, os
+import csv, gc, glob, json, math, argparse, logging, os, shutil
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -484,6 +484,7 @@ def step_register(fish_ids: List[int], experiments: List[str],
             _run_one_experiment(experiment, fish, summary_df, run_tx)
 
 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP: EVALUATE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -714,6 +715,24 @@ def main() -> None:
 
     if 'evaluate' in steps:
         step_evaluate(fish_ids, args.experiments)
+
+    # Cleanup per-slice dirs — only safe after both register and evaluate are done,
+    # since step_evaluate reads from them.
+    if 'register' in steps and 'evaluate' in steps:
+        logging.info('Cleaning up per-slice dirs ...')
+        for fish in fish_ids:
+            # Script 3's own per-slice c0/ dirs (one per experiment)
+            for exp in args.experiments:
+                _p = os.path.join(OUT_DIR, exp, str(fish), 'c0')
+                if os.path.isdir(_p):
+                    shutil.rmtree(_p)
+                    logging.info(f'  Deleted {_p}')
+            # Script 2's c0/ and tissue_map/ per-slice dirs
+            for _d in ('c0', 'tissue_map'):
+                _p = os.path.join(IN2_DIR, str(fish), _d)
+                if os.path.isdir(_p):
+                    shutil.rmtree(_p)
+                    logging.info(f'  Deleted {_p}')
 
     logging.info(f'Done. Output: {OUT_DIR}')
 

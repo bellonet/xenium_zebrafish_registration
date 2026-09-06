@@ -28,7 +28,7 @@ Usage:
   python 2_rigid_registration.py --steps per_gene --fish 2   # per_gene, fish 2 only
 """
 
-import os, gc, glob, json, re, argparse, logging, math
+import os, gc, glob, json, re, argparse, logging, math, shutil
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -53,6 +53,8 @@ TRANSFORMS_SUBDIR  = 'transforms'   # sub-dir under OUT_DIR/{fish}/ for saved tr
 ANNOT_CSV          = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'leiden10annots.csv')
 # Zarr mask indices: 0 = nucleus (DAPI), 1 = cell boundary
 ZARR_MASK_IDX = {'cells': '1', 'nuclei': '0'}
+
+CROP_PAD      = 32   # px padding added around content bounding box when cropping
 
 # ── elastix parameters ────────────────────────────────────────────────────────
 PAD_PX        = 64
@@ -721,12 +723,65 @@ def step_segmentation(fish_ids: List[int]) -> None:
 
 # ── step: stack ───────────────────────────────────────────────────────────────
 
+def _crop_bbox(vol: np.ndarray, pad: int) -> Tuple[int, int, int, int]:
+    """Return (row0, col0, row1, col1) bounding box of nonzero content + padding."""
+    mask = np.any(vol > 0, axis=0)   # (H, W) — any nonzero across Z
+    rows = np.where(np.any(mask, axis=1))[0]
+    cols = np.where(np.any(mask, axis=0))[0]
+    if len(rows) == 0 or len(cols) == 0:
+        return 0, 0, vol.shape[1], vol.shape[2]
+    H, W = vol.shape[1], vol.shape[2]
+    return (max(0, int(rows[0]) - pad),
+            max(0, int(cols[0]) - pad),
+            min(H, int(rows[-1]) + 1 + pad),
+            min(W, int(cols[-1]) + 1 + pad))
+
+
 def step_stack(fish_ids: List[int]) -> None:
     for fish in fish_ids:
         logging.info(f"=== Fish {fish}: building 3D stacks ===")
 
-        # Fluorescence channels — float32 single-channel stacks
-        for ch in range(NUM_CHANNELS):
+        # ── determine crop box from DAPI (channel 0) first ────────────────────
+        # Build DAPI stack, compute tight bounding box, write cropped version.
+        # All subsequent stacks use the same crop so every output is consistent.
+        crop_box: Optional[Tuple[int, int, int, int]] = None  # (r0, c0, r1, c1)
+
+        dapi_dir = os.path.join(OUT_DIR, str(fish), 'c0')
+        if os.path.isdir(dapi_dir):
+            files = sorted(
+                glob.glob(os.path.join(dapi_dir, '*.tif')),
+                key=lambda f: int(os.path.splitext(os.path.basename(f))[0])
+            )
+            if files:
+                frames = [tifffile.imread(f).astype(np.float32) for f in files]
+                vol    = np.stack(frames, axis=0)
+                del frames; gc.collect()
+                crop_box = _crop_bbox(vol, CROP_PAD)
+                r0, c0_b, r1, c1_b = crop_box
+                vol = vol[:, r0:r1, c0_b:c1_b]
+                out_path = os.path.join(OUT_DIR, str(fish), 'rigid_3d_c0.tif')
+                tifffile.imwrite(out_path, vol)
+                gnums = [int(os.path.splitext(os.path.basename(f))[0]) for f in files]
+                logging.info(f"  c0 (DAPI): cropped shape {vol.shape}  "
+                             f"crop rows {r0}:{r1} cols {c0_b}:{c1_b}  "
+                             f"slices {gnums[0]}–{gnums[-1]}")
+                del vol; gc.collect()
+        else:
+            logging.warning(f"  c0: output dir missing, skipping")
+
+        # Save crop_box to transforms.json for script 5
+        meta_path = os.path.join(OUT_DIR, str(fish), 'transforms.json')
+        if crop_box is not None and os.path.exists(meta_path):
+            r0, c0_b, r1, c1_b = crop_box
+            with open(meta_path) as fh:
+                meta = json.load(fh)
+            meta['crop_box'] = {'row0': r0, 'col0': c0_b, 'row1': r1, 'col1': c1_b}
+            with open(meta_path, 'w') as fh:
+                json.dump(meta, fh, indent=2)
+            logging.info(f'  crop_box rows {r0}:{r1} cols {c0_b}:{c1_b} → transforms.json')
+
+        # ── remaining fluorescence channels ────────────────────────────────────
+        for ch in range(1, NUM_CHANNELS):
             ch_dir = os.path.join(OUT_DIR, str(fish), f'c{ch}')
             if not os.path.isdir(ch_dir):
                 logging.warning(f"  c{ch}: output dir missing, skipping")
@@ -739,13 +794,16 @@ def step_stack(fish_ids: List[int]) -> None:
                 continue
             frames = [tifffile.imread(f).astype(np.float32) for f in files]
             vol = np.stack(frames, axis=0)
+            if crop_box is not None:
+                r0, c0_b, r1, c1_b = crop_box
+                vol = vol[:, r0:r1, c0_b:c1_b]
             out_path = os.path.join(OUT_DIR, str(fish), f'rigid_3d_c{ch}.tif')
             tifffile.imwrite(out_path, vol)
             gnums = [int(os.path.splitext(os.path.basename(f))[0]) for f in files]
-            logging.info(f"  c{ch}: shape {vol.shape}  global_nums {gnums[0]}–{gnums[-1]}  (frame 1 = global_num 1)")
+            logging.info(f"  c{ch}: shape {vol.shape}  slices {gnums[0]}–{gnums[-1]}")
             del frames, vol; gc.collect()
 
-        # Segmentation — RGB stacks (seg_cells, seg_nuclei, tissue_map) → (Z, H, W, 3)
+        # ── segmentation — RGB stacks (Z, H, W, 3) ────────────────────────────
         for seg_dir_name in ('seg_cells', 'seg_nuclei', 'tissue_map'):
             seg_dir = os.path.join(OUT_DIR, str(fish), seg_dir_name)
             if not os.path.isdir(seg_dir):
@@ -758,13 +816,16 @@ def step_stack(fish_ids: List[int]) -> None:
                 continue
             frames = [tifffile.imread(f) for f in files]   # each (H, W, 3) uint8
             vol = np.stack(frames, axis=0)                  # (Z, H, W, 3)
+            if crop_box is not None:
+                r0, c0_b, r1, c1_b = crop_box
+                vol = vol[:, r0:r1, c0_b:c1_b, :]
             out_path = os.path.join(OUT_DIR, str(fish), f'{seg_dir_name}_3d.tif')
             tifffile.imwrite(out_path, vol, photometric='rgb')
             gnums = [int(os.path.splitext(os.path.basename(f))[0]) for f in files]
             logging.info(f"  {seg_dir_name}: shape {vol.shape}  slices {gnums[0]}–{gnums[-1]}")
             del frames, vol; gc.collect()
 
-        # Single-channel uint8 stack: cell_type_label (0=bg, 1–34=cell type)
+        # ── single-channel uint8: cell_type_label ─────────────────────────────
         for sc_name in ('cell_type_label',):
             sc_dir = os.path.join(OUT_DIR, str(fish), sc_name)
             if not os.path.isdir(sc_dir):
@@ -777,11 +838,22 @@ def step_stack(fish_ids: List[int]) -> None:
                 continue
             frames = [tifffile.imread(f) for f in files]  # each (H, W) uint8
             vol    = np.stack(frames, axis=0)              # (Z, H, W)
+            if crop_box is not None:
+                r0, c0_b, r1, c1_b = crop_box
+                vol = vol[:, r0:r1, c0_b:c1_b]
             out_path = os.path.join(OUT_DIR, str(fish), f'{sc_name}_3d.tif')
             tifffile.imwrite(out_path, vol)
             gnums = [int(os.path.splitext(os.path.basename(f))[0]) for f in files]
             logging.info(f"  {sc_name}: shape {vol.shape}  slices {gnums[0]}–{gnums[-1]}")
             del frames, vol; gc.collect()
+
+        # Delete per-slice dirs that are no longer needed.
+        # c0/ and tissue_map/ are kept — script 3 needs them; script 3 deletes them.
+        for _d in ('c1', 'c2', 'c3', 'seg_cells', 'seg_nuclei', 'cell_type_label'):
+            _p = os.path.join(OUT_DIR, str(fish), _d)
+            if os.path.isdir(_p):
+                shutil.rmtree(_p)
+                logging.info(f'  Deleted per-slice dir: {_d}/')
 
 
 # ── step: per_gene ────────────────────────────────────────────────────────────
