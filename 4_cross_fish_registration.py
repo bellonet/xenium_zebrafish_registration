@@ -61,8 +61,8 @@ IN3_DIR = '../analysis/3_improved_registration'
 OUT_DIR = '../analysis/4_registered'
 
 # ── fish groups ────────────────────────────────────────────────────────────────
-WT_FISH     = [1, 2, 3]
-MUTANT_FISH = [4, 5, 6]
+WT_FISH     = [4, 5, 6]
+MUTANT_FISH = [1, 2, 3]
 
 # ── imaging constants ──────────────────────────────────────────────────────────
 XENIUM_PX_UM  = 0.2125

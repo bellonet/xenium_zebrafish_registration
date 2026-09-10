@@ -898,34 +898,18 @@ def main():
         alert_html = f"""
 <div style="background:#FFF3CD;border:2px solid #E67E22;border-radius:8px;
             padding:1.2em 1.5em;margin:1.5em 0">
-<h3 style="color:#E67E22;margin-top:0">⚠️  Data / Expectation Mismatch Detected</h3>
-<p>The observed volume changes (fish 1–3 = WT, fish 4–6 = Mutant) are <b>opposite</b>
-to the biologically expected direction for the focal cell types.
-<b>Spinal cord</b> (control) is consistent, which suggests the registration and labelling
-pipeline are working — but the group assignment or the biological expectation may need
-to be checked.</p>
-<p><b>Most likely explanations:</b></p>
-<ol>
-<li>The fish numbering is <b>reversed</b> in the registered data (fish 1–3 may be mutants,
-    fish 4–6 may be WT). If so, swap the group definition in
-    <code>WT_FISH</code> / <code>MUT_FISH</code> at the top of the script and re-run.</li>
-<li>The leiden10annots labels are derived from a joint embedding where the
-    mutant-enriched cell types happen to cluster with names expected for WT
-    (e.g. because the cell-type classifier was trained on WT only).</li>
-</ol>
+<h3 style="color:#E67E22;margin-top:0">⚠️  Unexpected Direction in Focal Cell Types</h3>
+<p>One or more focal cell types show volume changes in the <b>opposite</b> direction
+to biological expectation (WT = fish 4–6, Mutant = fish 1–3).
+Spinal cord (control) should be relatively unchanged.</p>
 <table style="border-collapse:collapse;width:100%;margin-top:.8em">
 <tr style="background:#2C3E50;color:white">
 <th style="padding:.4em .8em">Cell type</th>
-<th>Expected (per biology)</th>
-<th>Observed (fish 1–3 as WT)</th>
+<th>Expected</th>
+<th>Observed (Mutant vs WT)</th>
 <th>Match?</th></tr>
 {rows_html}
 </table>
-<p style="margin-top:.8em;font-size:.9em;color:#666">
-The rest of the report uses the assignment as given
-(fish 1–3 = WT, 4–6 = Mutant). Please verify and re-run with corrected groups
-if needed.
-</p>
 </div>"""
     sections.append(alert_html)
 
