@@ -1,5 +1,5 @@
 """
-5_apply_registration.py  —  Apply the full registration pipeline to new data.
+6_apply_registration.py  —  Apply the full registration pipeline to new data.
 
 Applies the complete 3-layer registration stack to any additional data:
 
@@ -34,7 +34,7 @@ APPLY_TO_IMAGE       = False  # set to True + provide path to transform a custom
 CUSTOM_IMAGE_PATH    = ''     # (Z, H, W) float32 TIFF in raw Xenium space
 NN_INTERPOLATION     = False  # True for label/seg images (no colour mixing)
 
-OUT_DIR = '../analysis/5_applied'
+OUT_DIR = '../analysis/6_applied'
 
 # Run → Xenium output folder mapping (keep in sync with script 2's RUN_FOLDERS)
 RUN_FOLDERS: dict = {

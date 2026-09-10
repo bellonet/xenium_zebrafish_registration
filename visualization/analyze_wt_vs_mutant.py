@@ -54,7 +54,7 @@ SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT    = os.path.dirname(SCRIPT_DIR)
 ANNOTS_CSV   = os.path.join(REPO_ROOT, "leiden10annots.csv")
 REG_BASE     = os.path.join(os.path.dirname(REPO_ROOT), "analysis",
-                             "4_registered", "dapi_blend_rigid_affine_z10")
+                             "5_consensus")
 OUT_HTML     = os.path.join(SCRIPT_DIR, "report.html")
 
 # ─── Groups ───────────────────────────────────────────────────────────────────
@@ -837,7 +837,7 @@ def main():
     sections.append("""
 <h1>WT vs Mutant Zebrafish: Cell-Type Spatial Analysis</h1>
 <div class="meta">
-<b>Registration:</b> dapi_blend_rigid_affine_z10 &nbsp;|&nbsp;
+<b>Registration:</b> dapi_blend_rigid_affine_z10 (yolk-trimmed) &nbsp;|&nbsp;
 <b>WT:</b> fish 4, 5, 6 &nbsp;|&nbsp;
 <b>Mutant:</b> fish 1, 2, 3<br>
 <b>Volume:</b> 111 × 1239 × 1236 voxels (same registered space for all fish)<br>

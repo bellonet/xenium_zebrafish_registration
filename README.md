@@ -110,9 +110,25 @@ Config: `WT_FISH`, `MUTANT_FISH`, `DRIVING_OPTIONS`, `STAGES_OPTIONS`. Filter wi
 
 ---
 
-### Script 5: apply registration to new data
+### Script 5: yolk trimming / consensus mask
 
-`5_apply_registration.py`
+`5_trim_yolk.py`
+
+Identifies and removes the yolk-sac region (posterior z-slices where fish anatomy becomes inconsistent) by computing within-group cell-type agreement. Outputs a consensus mask and QC plots.
+
+See script docstring for full details.
+
+```bash
+python3 5_trim_yolk.py
+```
+
+Output: `analysis/5_consensus/`
+
+---
+
+### Script 6: apply registration to new data
+
+`6_apply_registration.py`
 
 Applies the full registration stack to new data: transcripts, cell centroids, or any TIFF image.
 
@@ -127,10 +143,10 @@ For points: exact coordinate math, no interpolation at any step.
 Config block at the top of the file. Set `FISH`, `RUN`, `SCRIPT3_EXP`, `SCRIPT4_EXP`, and the `APPLY_TO_*` flags, then run:
 
 ```bash
-python3 5_apply_registration.py
+python3 6_apply_registration.py
 ```
 
-Output: `analysis/5_applied/`
+Output: `analysis/6_applied/`
 
 Set `NN_INTERPOLATION = True` for label images.
 
