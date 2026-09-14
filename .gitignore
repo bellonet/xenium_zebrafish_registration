@@ -1,3 +1,4 @@
 tests/__pycache__
 .pytest_cache
 .snakemake/
+visualization/analysis_cache.npz

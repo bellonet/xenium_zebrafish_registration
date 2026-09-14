@@ -32,9 +32,11 @@ Output: visualization/report.html  (self-contained, all plots embedded)
 Run from the repo root or visualization/ dir.  Uses ../scripts/.venv.
 """
 
+import argparse
 import base64
 import io
 import os
+import pickle
 import warnings
 from itertools import combinations
 
@@ -56,6 +58,7 @@ ANNOTS_CSV   = os.path.join(REPO_ROOT, "leiden10annots.csv")
 REG_BASE     = os.path.join(os.path.dirname(REPO_ROOT), "analysis",
                              "5_consensus")
 OUT_HTML     = os.path.join(SCRIPT_DIR, "report.html")
+CACHE_FILE   = os.path.join(SCRIPT_DIR, "analysis_cache.npz")
 
 # ─── Groups ───────────────────────────────────────────────────────────────────
 
@@ -80,8 +83,8 @@ ANISOTROPY   = Z_UM / XY_UM   # ~47 — Z is 47× coarser than XY
 
 # ─── Aesthetics ───────────────────────────────────────────────────────────────
 
-WT_COLOR     = "#4C9BE8"   # blue
-MUT_COLOR    = "#E8714C"   # orange
+WT_COLOR     = "#00838F"   # teal
+MUT_COLOR    = "#C2185B"   # magenta
 WT_LABEL     = "WT (fish 4–6)"
 MUT_LABEL    = "Mutant (fish 1–3)"
 
@@ -141,26 +144,23 @@ def physical_volume_um3(vol, label_id):
 
 
 def dice_slicewise(vol_a, vol_b, label_id):
-    """Slice-wise mean Dice — avoids 47:1 Z:XY anisotropy bias.
+    """Weighted slice Dice between two fish for a given label.
 
-    For each Z-slice that has signal in at least one fish, compute the 2D
-    Dice between the two fish on that slice.  Average over all such slices.
-    This gives each anatomical level equal weight regardless of how thick it
-    is in physical space (i.e. Z resolution does not inflate/deflate the
-    metric relative to XY resolution).
+    Weighting each slice by its share of total signal (|A_z| + |B_z|) /
+    (|A| + |B|) and multiplying by per-slice Dice simplifies to standard
+    3D Dice: 2|A∩B| / (|A| + |B|).  This is the correct normalisation —
+    slices with more structure contribute proportionally more, while near-empty
+    slices barely matter.
 
-    Returns NaN if no slice has signal in either fish.
+    Returns NaN if neither fish has any signal for this label.
     """
     a = (vol_a == label_id)
     b = (vol_b == label_id)
-    slice_dice = []
-    for z in range(a.shape[0]):
-        az, bz = a[z], b[z]
-        denom = int(az.sum()) + int(bz.sum())
-        if denom == 0:
-            continue   # skip empty slices — no contribution
-        slice_dice.append(2.0 * float((az & bz).sum()) / denom)
-    return float(np.mean(slice_dice)) if slice_dice else np.nan
+    intersection = float(np.sum(a & b))
+    denom = float(np.sum(a) + np.sum(b))
+    if denom == 0:
+        return np.nan
+    return 2.0 * intersection / denom
 
 
 def pairwise_dice(vols, label_id, fish_ids):
@@ -216,11 +216,7 @@ def cohens_d(a, b):
 
 
 def volume_df(vols, type_to_id, id_to_type, wt=WT_FISH, mut=MUT_FISH):
-    """Long-form DataFrame: fish, group, cell_type, vol_um3.
-
-    Uses np.bincount for a single pass per fish (34× faster than calling
-    np.sum(vol == label_id) per label separately).
-    """
+    """Long-form DataFrame: fish, group, cell_type, vol_um3."""
     n_labels = max(id_to_type.keys()) + 1   # labels are 0..N
     rows = []
     for fish in wt + mut:
@@ -270,44 +266,139 @@ def img_tag(b64, caption="", width="100%"):
 # 6. FIGURE GENERATORS
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _abbrev(name):
+    """Short label for a cell type: initials if multi-word, else first 6 chars."""
+    words = name.split()
+    if len(words) == 1:
+        return name[:7]
+    return "".join(w[0].upper() for w in words)
+
+
+def plot_composition(vol_df):
+    """Horizontal stacked bar: each cell type as % of total volume, per fish.
+
+    Fish are ordered WT (4,5,6) then Mutant (1,2,3) with a visual gap.
+    Cell types sorted by size in fish 4 (first WT fish), largest on top.
+    Focal types use their assigned colours; others cycle gray shades.
+    Abbreviated labels are drawn inside segments ≥ 2%.
+    """
+    totals = vol_df.groupby("fish")["vol_um3"].transform("sum")
+    vol_df = vol_df.copy()
+    vol_df["pct"] = vol_df["vol_um3"] / totals * 100
+
+    # Sort cell types by size in fish 4
+    fish4 = vol_df[vol_df["fish"] == 4].set_index("cell_type")["pct"]
+    cell_order = fish4.sort_values(ascending=False).index.tolist()
+
+    focus = set(FOCUS_TYPES)
+    gray_shades = ["#D0D0D0", "#B0B0B0", "#909090", "#707070",
+                   "#D0D0D0", "#B0B0B0", "#909090", "#707070"]
+    other_idx = 0
+    color_map = {}
+    for ct in cell_order:
+        if ct in focus:
+            color_map[ct] = FOCUS_COLORS[ct]
+        else:
+            color_map[ct] = gray_shades[other_idx % len(gray_shades)]
+            other_idx += 1
+
+    fish_order = WT_FISH + MUT_FISH
+    # y positions with a gap between WT and Mutant groups
+    y_pos = {f: i + (0.6 if i >= len(WT_FISH) else 0) for i, f in enumerate(fish_order)}
+
+    fig, ax = plt.subplots(figsize=(13, 7))
+
+    lefts = {f: 0.0 for f in fish_order}
+    for ct in reversed(cell_order):   # reversed so largest is leftmost
+        sub  = vol_df[vol_df["cell_type"] == ct].set_index("fish")["pct"]
+        vals = [sub.get(f, 0.0) for f in fish_order]
+        ys   = [y_pos[f] for f in fish_order]
+        col  = color_map[ct]
+        ax.barh(ys, vals, left=[lefts[f] for f in fish_order],
+                color=col, height=0.55, edgecolor="white", linewidth=0.3)
+
+        # Label inside segment if wide enough — vertical to avoid overlap
+        abbr = _abbrev(ct)
+        for f, v, l in zip(fish_order, vals, [lefts[f] for f in fish_order]):
+            if v >= 1.0:
+                txt_col = "white" if ct in focus else "#333"
+                ax.text(l + v / 2, y_pos[f], abbr,
+                        ha="center", va="center", fontsize=7.5,
+                        color=txt_col, fontweight="bold" if ct in focus else "normal",
+                        rotation=90, clip_on=True)
+        for f, v in zip(fish_order, vals):
+            lefts[f] += v
+
+    # y-axis labels
+    yticks  = [y_pos[f] for f in fish_order]
+    ylabels = [f"Fish {f}  ({'WT' if f in WT_FISH else 'Mut'})" for f in fish_order]
+    ax.set_yticks(yticks)
+    ax.set_yticklabels(ylabels, fontsize=13)
+    ax.set_xlabel("% of total tissue volume", fontsize=13)
+    ax.set_title("Cell type composition per fish  (sorted by size in Fish 4)", fontsize=15)
+    ax.tick_params(axis="x", labelsize=12)
+
+    # Group labels to the right
+    xmax = max(lefts.values())
+    wt_y  = np.mean([y_pos[f] for f in WT_FISH])
+    mut_y = np.mean([y_pos[f] for f in MUT_FISH])
+    ax.text(xmax + 1, wt_y,  "WT",     va="center", fontsize=13,
+            color=WT_COLOR,  fontweight="bold")
+    ax.text(xmax + 1, mut_y, "Mutant", va="center", fontsize=13,
+            color=MUT_COLOR, fontweight="bold")
+
+    # Legend below the plot
+    patches = [mpatches.Patch(color=FOCUS_COLORS[ct], label=ct) for ct in FOCUS_TYPES]
+    patches.append(mpatches.Patch(color="#B0B0B0", label="other cell types"))
+    ax.legend(handles=patches, loc="upper center",
+              bbox_to_anchor=(0.5, -0.12), ncol=3,
+              fontsize=10, framealpha=0.8)
+
+    ax.set_ylim(min(yticks) - 0.5, max(yticks) + 0.5)
+    fig.tight_layout()
+    return fig
+
 def plot_volume_overview(vol_df):
-    """Bar chart: log2 fold-change mutant/WT for every cell type, sorted."""
+    """Bar chart: log2 fold-change mutant/WT for every cell type, sorted.
+
+    Log₂ is used so that equal-magnitude increases and decreases are symmetric
+    around zero (e.g. 2× increase = +1, 2× decrease = −1), and the scale
+    compresses large differences that would otherwise dominate a linear axis.
+    A pseudocount of +1 is added before dividing to avoid log(0).
+    """
     grp = vol_df.groupby(["cell_type", "group"])["vol_um3"].mean().unstack()
     grp = grp.fillna(0)
-    # avoid div-by-zero
     wt_mean  = grp.get("WT",     pd.Series(dtype=float))
     mut_mean = grp.get("Mutant", pd.Series(dtype=float))
     log2fc = np.log2((mut_mean + 1) / (wt_mean + 1))
     log2fc = log2fc.sort_values()
 
     focus = set(FOCUS_TYPES)
-    colors = [
-        (FOCUS_COLORS.get(ct, "#C0392B") if ct in focus and log2fc[ct] < 0 else
-         FOCUS_COLORS.get(ct, "#2980B9") if ct in focus else
-         MUT_COLOR if log2fc[ct] > 0 else WT_COLOR)
-        for ct in log2fc.index
-    ]
+    # Non-focal cell types are shown as neutral gray; focal types use their
+    # assigned colour so they stand out against the background.
+    GRAY = "#AAAAAA"
+    bar_colors    = [FOCUS_COLORS.get(ct, GRAY) if ct in focus else GRAY
+                     for ct in log2fc.index]
+    edge_colors   = [FOCUS_COLORS.get(ct, "none") if ct in focus else "none"
+                     for ct in log2fc.index]
+    edge_widths   = [1.8 if ct in focus else 0 for ct in log2fc.index]
 
     fig, ax = plt.subplots(figsize=(10, 9))
-    bars = ax.barh(range(len(log2fc)), log2fc.values, color=colors, edgecolor="none",
-                   height=0.7)
+    ax.barh(range(len(log2fc)), log2fc.values,
+            color=bar_colors, edgecolor=edge_colors, linewidth=edge_widths,
+            height=0.7)
     ax.set_yticks(range(len(log2fc)))
     ax.set_yticklabels(log2fc.index, fontsize=9)
     ax.axvline(0, color="black", linewidth=0.8)
     ax.set_xlabel("log₂ fold-change (Mutant / WT)")
-    ax.set_title("Volume fold-change: Mutant vs WT\n(all cell types, sorted by log₂FC)")
+    ax.set_title("Volume Fold-Change: Mutant vs WT")
 
-    # Mark focus cell types
     for i, ct in enumerate(log2fc.index):
         if ct in focus:
             ax.get_yticklabels()[i].set_fontweight("bold")
             ax.get_yticklabels()[i].set_color(FOCUS_COLORS.get(ct, "black"))
 
-    # legend
-    patches = [
-        mpatches.Patch(color=MUT_COLOR, label="Increased in mutant"),
-        mpatches.Patch(color=WT_COLOR,  label="Decreased in mutant"),
-    ]
+    patches = [mpatches.Patch(color=GRAY, label="other cell types")]
     for ct, col in FOCUS_COLORS.items():
         patches.append(mpatches.Patch(color=col, label=f"★ {ct}"))
     ax.legend(handles=patches, bbox_to_anchor=(1.02, 1), loc="upper left",
@@ -318,58 +409,55 @@ def plot_volume_overview(vol_df):
 
 def plot_volume_per_fish(vol_df, cell_types=FOCUS_TYPES):
     """Strip + bar plots: physical volume (µm³) per fish, per focal cell type.
-
-    Effect size shown as Cohen's d (pooled SD).  No p-values — with n=3 vs 3
-    the minimum achievable two-sided Mann-Whitney p is 0.10, making
-    significance thresholds meaningless.
+    Arranged in a 2×3 grid; effect sizes as log₂FC and Cohen's d.
     """
-    n = len(cell_types)
-    fig, axes = plt.subplots(1, n, figsize=(5 * n, 7), sharey=False)
-    if n == 1:
-        axes = [axes]
+    ncols = 3
+    nrows = 2
+    fig, axes = plt.subplots(nrows, ncols, figsize=(18, 11), sharey=False)
+    axes_flat = axes.flatten()
 
-    for ax, ct in zip(axes, cell_types):
+    for idx, ct in enumerate(cell_types):
+        ax = axes_flat[idx]
         sub = vol_df[vol_df["cell_type"] == ct].copy()
         wt_vals  = sub[sub["group"] == "WT"]["vol_um3"].values
         mut_vals = sub[sub["group"] == "Mutant"]["vol_um3"].values
 
-        # bar for mean
         ax.bar([0], [wt_vals.mean()],  color=WT_COLOR,  width=0.5, alpha=0.6, zorder=1)
         ax.bar([1], [mut_vals.mean()], color=MUT_COLOR, width=0.5, alpha=0.6, zorder=1)
 
-        # error bars (std)
         ax.errorbar([0], [wt_vals.mean()],  yerr=wt_vals.std(),  fmt="none",
-                    color="black", capsize=5, linewidth=1.5, zorder=2)
+                    color="black", capsize=6, linewidth=1.8, zorder=2)
         ax.errorbar([1], [mut_vals.mean()], yerr=mut_vals.std(), fmt="none",
-                    color="black", capsize=5, linewidth=1.5, zorder=2)
+                    color="black", capsize=6, linewidth=1.8, zorder=2)
 
-        # individual points
         np.random.seed(42)
         jitter = np.random.uniform(-0.08, 0.08, size=len(wt_vals))
-        ax.scatter(np.zeros(len(wt_vals))  + jitter, wt_vals,  color=WT_COLOR,
-                   s=60, zorder=3, edgecolors="white", linewidths=0.5)
+        ax.scatter(np.zeros(len(wt_vals)) + jitter, wt_vals,  color=WT_COLOR,
+                   s=90, zorder=3, edgecolors="white", linewidths=0.8)
         jitter = np.random.uniform(-0.08, 0.08, size=len(mut_vals))
         ax.scatter(np.ones(len(mut_vals)) + jitter, mut_vals, color=MUT_COLOR,
-                   s=60, zorder=3, edgecolors="white", linewidths=0.5)
+                   s=90, zorder=3, edgecolors="white", linewidths=0.8)
 
-        # Cohen's d effect size (no p-value — n=3 makes them meaningless)
         d = cohens_d(wt_vals, mut_vals)
         fc = np.log2((mut_vals.mean() + 1) / (wt_vals.mean() + 1))
-        ax.annotate(f"log₂FC={fc:+.1f}\nd={d:.1f}" if not np.isnan(d) else f"log₂FC={fc:+.1f}",
-                    xy=(0.5, 0.93), xycoords="axes fraction",
-                    ha="center", fontsize=11, color="#333")
+        label = f"log₂FC = {fc:+.1f}\nd = {d:.1f}" if not np.isnan(d) else f"log₂FC = {fc:+.1f}"
+        ax.annotate(label, xy=(0.5, 0.87), xycoords="axes fraction",
+                    ha="center", fontsize=14, color="#333")
 
         ax.set_xticks([0, 1])
-        ax.set_xticklabels(["WT\n(4–6)", "Mutant\n(1–3)"], fontsize=13)
-        ax.set_title(ct, fontsize=13, wrap=True)
-        ax.set_ylabel("Volume (µm³)" if ax == axes[0] else "", fontsize=13)
+        ax.set_xticklabels(["WT\n(4–6)", "Mutant\n(1–3)"], fontsize=15)
+        ax.set_title(ct, fontsize=16, wrap=True, pad=14,
+                     color=FOCUS_COLORS.get(ct, "black"), fontweight="bold")
+        ax.set_ylabel("Volume (µm³)", fontsize=14)
         ax.set_xlim(-0.5, 1.5)
-        color = FOCUS_COLORS.get(ct, "black")
-        ax.title.set_color(color)
+        ax.tick_params(axis="y", labelsize=13)
 
-    fig.suptitle("Physical volume per fish — focal cell types\n"
-                 "(effect sizes: log₂FC and Cohen's d; no p-values, n=3)",
-                 fontsize=12, y=1.03)
+    # hide unused subplot (6th cell, only 5 types)
+    for idx in range(len(cell_types), nrows * ncols):
+        axes_flat[idx].axis("off")
+
+    fig.suptitle("Physical volume per fish — focal cell types",
+                 fontsize=16, y=1.01)
     fig.tight_layout()
     return fig
 
@@ -427,39 +515,47 @@ def plot_dice_heatmaps_grid(vols, type_to_id, cell_types=FOCUS_TYPES, ncols=3):
 
 
 def plot_dice_comparison(vols, type_to_id, cell_types=FOCUS_TYPES):
-    """Grouped strip plot: within-WT / within-mutant / between slice-wise Dice."""
-    fig, axes = plt.subplots(1, len(cell_types), figsize=(5 * len(cell_types), 7), sharey=True)
-    if len(cell_types) == 1:
-        axes = [axes]
+    """Grouped strip plot: within-WT / within-mutant / between-group Dice. 2×3 grid."""
+    ncols, nrows = 3, 2
+    fig, axes = plt.subplots(nrows, ncols, figsize=(18, 11), sharey=False)
+    axes_flat = axes.flatten()
 
-    for ax, ct in zip(axes, cell_types):
+    for idx, ct in enumerate(cell_types):
+        ax = axes_flat[idx]
         label_id = type_to_id[ct]
         wt_d, mut_d, btw_d = group_dice_stats(vols, label_id)
         group_data = [wt_d, mut_d, btw_d]
         group_cols = [WT_COLOR, MUT_COLOR, "gray"]
 
+        tops = []
         for xi, (vals, col) in enumerate(zip(group_data, group_cols)):
             vals = [v for v in vals if not np.isnan(v)]
             if not vals:
                 continue
-            ax.bar([xi], [np.mean(vals)], color=col, alpha=0.5, width=0.5)
-            ax.errorbar([xi], [np.mean(vals)], yerr=np.std(vals),
-                        fmt="none", color="black", capsize=5)
+            m, s = np.mean(vals), np.std(vals)
+            tops.append(m + s)
+            ax.bar([xi], [m], color=col, alpha=0.5, width=0.5)
+            ax.errorbar([xi], [m], yerr=s,
+                        fmt="none", color="black", capsize=6, linewidth=1.8)
             jitter = np.random.uniform(-0.1, 0.1, len(vals))
             ax.scatter(np.full(len(vals), xi) + jitter, vals, color=col,
-                       s=60, zorder=3, edgecolors="white")
+                       s=90, zorder=3, edgecolors="white", linewidths=0.8)
+
+        if tops:
+            ax.set_ylim(bottom=0, top=max(tops) * 1.25)
 
         ax.set_xticks([0, 1, 2])
-        ax.set_xticklabels(["within\nWT", "within\nMut", "between"], fontsize=13)
-        ax.set_title(ct, fontsize=13)
-        ax.set_ylim(-0.05, 1.05)
-        color = FOCUS_COLORS.get(ct, "black")
-        ax.title.set_color(color)
+        ax.set_xticklabels(["within\nWT", "within\nMut", "between"], fontsize=14)
+        ax.set_title(ct, fontsize=16, pad=14,
+                     color=FOCUS_COLORS.get(ct, "black"), fontweight="bold")
+        ax.tick_params(axis="y", labelsize=13)
+        if idx % ncols == 0:
+            ax.set_ylabel("Dice coefficient", fontsize=14)
 
-    axes[0].set_ylabel("Slice-wise mean Dice", fontsize=13)
-    fig.suptitle("Slice-wise Dice: within- vs between-group\n"
-                 "(per Z-slice Dice, averaged — corrects for 47:1 Z:XY anisotropy)",
-                 fontsize=12, y=1.03)
+    for idx in range(len(cell_types), nrows * ncols):
+        axes_flat[idx].axis("off")
+
+    fig.suptitle("Dice: within- vs between-group", fontsize=16, y=1.01)
     fig.tight_layout()
     return fig
 
@@ -755,26 +851,24 @@ HTML_HEAD = """\
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WT vs Mutant Zebrafish Cell-Type Analysis</title>
+<title>Zebrafish Embryo Tail: WT vs Mutant Cell Type Spatial Analysis</title>
 <style>
-  body  {{ font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-           max-width: 1300px; margin: 0 auto; padding: 2em 1.5em;
-           color: #222; background: #fafafa; }}
-  h1   {{ color: #1a1a2e; border-bottom: 3px solid #4C9BE8; padding-bottom:.4em }}
-  h2   {{ color: #16213e; margin-top: 2.5em; border-left: 4px solid #E8714C;
-           padding-left: .6em }}
-  h3   {{ color: #0f3460; }}
-  p, li{{ line-height: 1.7 }}
-  .meta{{ background:#eef2ff; border-radius:8px; padding:1em 1.5em; margin:1em 0 }}
-  .focus-table {{ border-collapse:collapse; width:100%; margin:1em 0 }}
-  .focus-table td, .focus-table th {{
-    border:1px solid #ddd; padding:.5em .8em; }}
-  .focus-table th {{ background:#2C3E50; color:white }}
-  .focus-table tr:nth-child(even) {{ background:#f8f8f8 }}
-  figure {{ background: white; border-radius: 8px; padding: 1em;
-            box-shadow: 0 1px 6px rgba(0,0,0,.1); }}
-  figcaption {{ font-size:.9em; color:#555; margin-bottom:.5em; font-style:italic }}
-  hr   {{ border:none; border-top:1px solid #ddd; margin:2em 0 }}
+  html  { background: #dde1e7; }
+  body  { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+          max-width: 1100px; margin: 2em auto; padding: 2.5em 4em 4em;
+          color: #222; background: #fafafa;
+          border-radius: 8px;
+          box-shadow: 0 2px 16px rgba(0,0,0,.12); }
+  h1   { color: #1a1a2e; border-bottom: 3px solid #4C9BE8; padding-bottom:.4em }
+  h2   { color: #16213e; margin-top: 2.5em; border-left: 4px solid #E8714C;
+          padding-left: .6em }
+  h3   { color: #0f3460; }
+  p, li { line-height: 1.7 }
+  .meta { background:#eef2ff; border-radius:8px; padding:1em 1.5em; margin:1em 0 }
+  figure { background: white; border-radius: 8px; padding: 1em;
+           box-shadow: 0 1px 6px rgba(0,0,0,.1); }
+  figcaption { font-size:.9em; color:#555; margin-bottom:.5em; font-style:italic }
+  hr   { border:none; border-top:1px solid #ddd; margin:2em 0 }
 </style>
 </head>
 <body>
@@ -799,10 +893,42 @@ def build_html(sections):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 8. MAIN
+# 8. CACHE I/O
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_cache(vols, vol_df, dice_cache, type_to_id, id_to_type, path=CACHE_FILE):
+    """Persist computed data so re-runs skip the slow load+compute steps."""
+    # Volumes stored as compressed uint8 arrays; metadata as pickle bytes.
+    meta = pickle.dumps({
+        "vol_df":     vol_df,
+        "dice_cache": dice_cache,
+        "type_to_id": type_to_id,
+        "id_to_type": id_to_type,
+    })
+    arrays = {f"vol_{fish}": vols[fish] for fish in ALL_FISH}
+    np.savez_compressed(path, meta=np.frombuffer(meta, dtype=np.uint8), **arrays)
+    print(f"  Cache saved → {path}")
+
+
+def load_cache(path=CACHE_FILE):
+    """Return (vols, vol_df, dice_cache, type_to_id, id_to_type) from cache."""
+    data = np.load(path, allow_pickle=False)
+    meta = pickle.loads(data["meta"].tobytes())
+    vols = {fish: data[f"vol_{fish}"] for fish in ALL_FISH}
+    return (vols, meta["vol_df"], meta["dice_cache"],
+            meta["type_to_id"], meta["id_to_type"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main():
+    parser = argparse.ArgumentParser(description="Generate WT vs Mutant report.")
+    parser.add_argument("--recompute", action="store_true",
+                        help="Ignore cache and recompute from raw TIFs.")
+    args = parser.parse_args()
+
     np.random.seed(42)
 
     print("=== WT vs Mutant Zebrafish Cell-Type Analysis ===")
@@ -810,23 +936,35 @@ def main():
     print(f"  WT fish:      {WT_FISH}")
     print(f"  Mutant fish:  {MUT_FISH}")
 
-    # 1. Label map
-    print("\n[1/6] Building label map ...")
-    type_to_id, id_to_type = build_label_map(ANNOTS_CSV)
+    use_cache = os.path.exists(CACHE_FILE) and not args.recompute
 
-    # 2. Load volumes
-    print("\n[2/6] Loading label volumes ...")
-    vols = load_label_volumes(ALL_FISH)
+    if use_cache:
+        print(f"\n[1/3] Loading from cache: {CACHE_FILE}")
+        vols, vol_df, dice_cache, type_to_id, id_to_type = load_cache()
+        print(f"  Volumes: {len(vols)} fish  |  Cell types: {len(type_to_id)}")
+    else:
+        if args.recompute:
+            print("\n  --recompute: ignoring existing cache.")
 
-    # 3. Volume dataframe (one bincount pass per fish)
-    print("\n[3/6] Computing voxel volumes ...")
-    vol_df = volume_df(vols, type_to_id, id_to_type)
-    print(f"  Volume table: {len(vol_df)} rows")
+        # 1. Label map
+        print("\n[1/6] Building label map ...")
+        type_to_id, id_to_type = build_label_map(ANNOTS_CSV)
 
-    # 3b. Pre-compute Dice for all cell types once (used by two plot functions)
-    print("  Pre-computing Dice for all 34 cell types ...")
-    dice_cache = compute_all_dice(vols, type_to_id)
-    print(f"  Done — {len(dice_cache)} cell types cached.")
+        # 2. Load volumes
+        print("\n[2/6] Loading label volumes ...")
+        vols = load_label_volumes(ALL_FISH)
+
+        # 3. Volume dataframe
+        print("\n[3/6] Computing voxel volumes ...")
+        vol_df = volume_df(vols, type_to_id, id_to_type)
+        print(f"  Volume table: {len(vol_df)} rows")
+
+        print("  Pre-computing Dice for all cell types ...")
+        dice_cache = compute_all_dice(vols, type_to_id)
+        print(f"  Done — {len(dice_cache)} cell types cached.")
+
+        print("\n  Saving cache ...")
+        save_cache(vols, vol_df, dice_cache, type_to_id, id_to_type)
 
     # 4. Build plots
     print("\n[4/6] Generating figures ...")
@@ -835,28 +973,74 @@ def main():
 
     # ── Intro ─────────────────────────────────────────────────────────────────
     sections.append("""
-<h1>WT vs Mutant Zebrafish: Cell-Type Spatial Analysis</h1>
+<h1>Zebrafish Embryo Tail: WT vs Mutant Cell Type Spatial Analysis</h1>
 <div class="meta">
-<b>Registration:</b> dapi_blend_rigid_affine_z10 (yolk-trimmed) &nbsp;|&nbsp;
-<b>WT:</b> fish 4, 5, 6 &nbsp;|&nbsp;
-<b>Mutant:</b> fish 1, 2, 3<br>
-<b>Volume:</b> 111 × 1239 × 1236 voxels (same registered space for all fish)<br>
-<b>Labels:</b> 34 cell types, 1-based alphabetically assigned integer IDs
-(from <code>leiden10annots.csv</code>)
+<table style="border-collapse:collapse;width:100%;font-size:.95em">
+<tr>
+  <td style="padding:.4em 1.2em .4em 0;white-space:nowrap;color:#555;font-weight:600">Registration</td>
+  <td style="padding:.4em 0">dapi_blend_rigid_affine_z10 &nbsp;·&nbsp; yolk-trimmed</td>
+</tr>
+<tr>
+  <td style="padding:.4em 1.2em .4em 0;color:#555;font-weight:600">Groups</td>
+  <td style="padding:.4em 0">
+    <span style="color:#00838F;font-weight:bold">WT</span>&nbsp; fish 4, 5, 6
+    &emsp;
+    <span style="color:#C2185B;font-weight:bold">Mutant</span>&nbsp; fish 1, 2, 3
+  </td>
+</tr>
+<tr>
+  <td style="padding:.4em 1.2em .4em 0;color:#555;font-weight:600">Volume</td>
+  <td style="padding:.4em 0">111 &times; 1239 &times; 1236 voxels &nbsp;·&nbsp; same registered space for all fish</td>
+</tr>
+<tr>
+  <td style="padding:.4em 1.2em .4em 0;color:#555;font-weight:600">Cell types</td>
+  <td style="padding:.4em 0">34 types &nbsp;·&nbsp; integer IDs 1-based alphabetical order
+    (<code>leiden10annots.csv</code>)</td>
+</tr>
+</table>
 </div>
+
 <h2>Focal cell types</h2>
-<table class="focus-table">
-<tr><th>Cell type</th><th>Expected change</th><th>Label ID</th></tr>
-<tr><td style="color:#C0392B;font-weight:bold">blood</td>
-    <td>Decreased / absent in mutant</td><td>""" + str(type_to_id["blood"]) + """</td></tr>
-<tr><td style="color:#8E44AD;font-weight:bold">hematopoietic cell</td>
-    <td>Decreased in mutant</td><td>""" + str(type_to_id["hematopoietic cell"]) + """</td></tr>
-<tr><td style="color:#E67E22;font-weight:bold">cranial vasculature</td>
-    <td>Decreased in mutant</td><td>""" + str(type_to_id["cranial vasculature"]) + """</td></tr>
-<tr><td style="color:#27AE60;font-weight:bold">spinal cord</td>
-    <td>Control — relatively unchanged</td><td>""" + str(type_to_id["spinal cord"]) + """</td></tr>
-<tr><td style="color:#2980B9;font-weight:bold">pronephric distal early tubule</td>
-    <td>Increased in mutant</td><td>""" + str(type_to_id["pronephric distal early tubule"]) + """</td></tr>
+<table style="border-collapse:collapse;width:100%;margin:1em 0;font-size:.95em">
+<thead>
+<tr style="background:#2C3E50;color:white">
+  <th style="padding:.6em 1em;text-align:left">Cell type</th>
+  <th style="padding:.6em 1em;text-align:left">Expected in mutant</th>
+  <th style="padding:.6em 1em;text-align:center">Label ID</th>
+</tr>
+</thead>
+<tbody>
+<tr style="background:#C0392B18">
+  <td style="padding:.6em 1em;border-left:4px solid #C0392B">
+    <span style="color:#C0392B;font-weight:bold">● blood</span></td>
+  <td style="padding:.6em 1em">↓ Decreased / absent</td>
+  <td style="padding:.6em 1em;text-align:center;font-family:monospace">""" + str(type_to_id["blood"]) + """</td>
+</tr>
+<tr style="background:#8E44AD18">
+  <td style="padding:.6em 1em;border-left:4px solid #8E44AD">
+    <span style="color:#8E44AD;font-weight:bold">● hematopoietic cell</span></td>
+  <td style="padding:.6em 1em">↓ Decreased</td>
+  <td style="padding:.6em 1em;text-align:center;font-family:monospace">""" + str(type_to_id["hematopoietic cell"]) + """</td>
+</tr>
+<tr style="background:#E67E2218">
+  <td style="padding:.6em 1em;border-left:4px solid #E67E22">
+    <span style="color:#E67E22;font-weight:bold">● cranial vasculature</span></td>
+  <td style="padding:.6em 1em">↓ Decreased</td>
+  <td style="padding:.6em 1em;text-align:center;font-family:monospace">""" + str(type_to_id["cranial vasculature"]) + """</td>
+</tr>
+<tr style="background:#27AE6018">
+  <td style="padding:.6em 1em;border-left:4px solid #27AE60">
+    <span style="color:#27AE60;font-weight:bold">● spinal cord</span></td>
+  <td style="padding:.6em 1em">→ Control — relatively unchanged</td>
+  <td style="padding:.6em 1em;text-align:center;font-family:monospace">""" + str(type_to_id["spinal cord"]) + """</td>
+</tr>
+<tr style="background:#2980B918">
+  <td style="padding:.6em 1em;border-left:4px solid #2980B9">
+    <span style="color:#2980B9;font-weight:bold">● pronephric distal early tubule</span></td>
+  <td style="padding:.6em 1em">↑ Increased</td>
+  <td style="padding:.6em 1em;text-align:center;font-family:monospace">""" + str(type_to_id["pronephric distal early tubule"]) + """</td>
+</tr>
+</tbody>
 </table>
 """)
 
@@ -913,59 +1097,88 @@ Spinal cord (control) should be relatively unchanged.</p>
 </div>"""
     sections.append(alert_html)
 
-    # ── Section 1: Overview fold-change ───────────────────────────────────────
-    sections.append("<h2>1 · Global volume changes: all cell types</h2>")
-    sections.append("<p>log₂ fold-change of mean voxel volume (Mutant / WT), "
-                    "averaged across fish within each group. Focal cell types are "
-                    "bold and coloured. Bars are sorted from most decreased (left) "
-                    "to most increased (right).</p>")
+    # ── Metrics explainer ─────────────────────────────────────────────────────
+    sections.append("""
+<div style="background:#f0f4ff;border-left:4px solid #4a6fa5;border-radius:6px;
+            padding:1.2em 1.6em;margin:2em 0;font-size:.95em;line-height:1.8">
+<h3 style="margin-top:0;color:#2C3E50">How to read the metrics</h3>
+<p style="margin:.4em 0">
+  <b>Log₂ fold-change (log₂FC)</b> — how much larger or smaller a cell type's volume
+  is in the mutant relative to WT, on a symmetric log scale.
+  <span style="color:#555">0 = no change &nbsp;·&nbsp; +1 = doubled &nbsp;·&nbsp;
+  −1 = halved &nbsp;·&nbsp; +2 = 4× larger &nbsp;·&nbsp; −2 = 4× smaller.</span>
+</p>
+<p style="margin:.4em 0">
+  <b>Cohen's d</b> — the difference between group means expressed in units of the
+  pooled standard deviation. Accounts for variability across fish, not just the
+  average shift.
+  <span style="color:#555">|d| ≈ 0.2 small &nbsp;·&nbsp; |d| ≈ 0.5 medium &nbsp;·&nbsp;
+  |d| ≈ 0.8 large &nbsp;·&nbsp; |d| &gt; 1.5 very large.</span>
+  <br>A large log₂FC with a small Cohen's d means the shift is real on average but the
+  fish are variable; both together give more confidence.
+</p>
+<p style="margin:.4em 0">
+  <b>Dice coefficient</b> — measures spatial overlap between two binary masks
+  (here: which voxels contain a given cell type in fish A vs fish B).
+  Dice = 2 |A ∩ B| / (|A| + |B|): 1 = perfect overlap, 0 = no overlap.
+  Computed as standard 3D Dice across the full volume — equivalent to
+  weighting each Z-slice by how much of the total structure it contains,
+  so slices with more signal contribute more and near-empty slices barely matter.
+</p>
+<p style="margin:.4em 0;color:#666">
+  <b>No p-values</b> — with n=3 per group, the minimum achievable two-sided
+  Mann–Whitney p is 0.10, making significance thresholds uninformative.
+  Effect sizes are the appropriate summary at this sample size.
+</p>
+</div>
+""")
+
+    # ── Section 1: Composition ────────────────────────────────────────────────
+    sections.append("<h2>1 · Cell type composition per fish</h2>")
+    sections.append("<p>Each bar shows one fish's tissue broken down by cell type as a "
+                    "percentage of its total labelled volume. Focal cell types are coloured "
+                    "and labelled; all others are gray.</p>")
+    print("  fig: composition ...")
+    fig = plot_composition(vol_df)
+    sections.append(img_tag(fig_to_b64(fig), ""))
+
+    # ── Section 2: Overview fold-change ───────────────────────────────────────
+    sections.append("<h2>2 · Global volume changes: all cell types</h2>")
+    sections.append("<p>Log₂ fold-change of mean voxel volume (Mutant / WT), "
+                    "averaged across fish within each group.</p>")
     print("  fig: volume overview ...")
     fig = plot_volume_overview(vol_df)
-    sections.append(img_tag(fig_to_b64(fig),
-        "Log₂ fold-change of voxel volume — all 34 cell types. "
-        "Blue = depleted in mutant, orange = enriched. Bold labels = focal cell types."))
+    sections.append(img_tag(fig_to_b64(fig), ""))
 
     # ── Section 2: Focal cell type volumes ────────────────────────────────────
-    sections.append("<h2>2 · Focal cell-type volumes — individual fish</h2>")
-    sections.append("<p>Physical volume in µm³ (voxel count × 0.4516 µm³/voxel). "
-                    "Bar = group mean; error bar = ±1 SD; dots = individual fish. "
-                    "Effect sizes shown on each plot: <b>log₂FC</b> (fold-change) and "
-                    "<b>Cohen's d</b> (standardised mean difference). "
-                    "No p-values: with n=3 per group the minimum achievable two-sided "
-                    "Mann–Whitney p is 0.10, so significance thresholds are meaningless.</p>")
+    sections.append("<h2>3 · Focal cell-type volumes — individual fish</h2>")
+    sections.append("<p>Physical volume in µm³ (voxel count × 0.4516 µm³/voxel).<br>"
+                    "Bar = group mean; error bar = ±1 SD; dots = individual fish.<br>"
+                    "<b>log₂FC</b> and <b>Cohen's d</b> are annotated inside each subplot.</p>")
     print("  fig: volume per fish ...")
     fig = plot_volume_per_fish(vol_df)
     sections.append(img_tag(fig_to_b64(fig),
         "Physical volume (µm³) per fish for each focal cell type. Individual fish points overlay "
         "the group mean bar."))
 
-    # ── Section 3: Dice heatmaps ───────────────────────────────────────────────
-    sections.append("<h2>3 · Pairwise Dice coefficients — focal cell types</h2>")
-    sections.append("<p>Dice similarity between every pair of fish for each focal cell type. "
-                    "WT–WT and Mut–Mut pairs are outlined; values near 1 indicate high "
-                    "spatial overlap. Disrupted cell types typically show low between-group "
-                    "Dice compared with within-group Dice.</p>")
-    print("  fig: dice heatmaps grid ...")
-    fig = plot_dice_heatmaps_grid(vols, type_to_id, ncols=3)
-    sections.append(img_tag(fig_to_b64(fig, dpi=110),
-        "6×6 pairwise Dice for all focal cell types. "
-        "Dashed boxes outline WT–WT (blue) and Mutant–Mutant (orange) pairs."))
-
-    # ── Section 4: Dice within vs between ──────────────────────────────────────
-    sections.append("<h2>4 · Within- vs between-group Dice comparison</h2>")
-    sections.append("<p>Comparing within-WT (3 pairs), within-Mutant (3 pairs), "
-                    "and between-group (9 pairs) slice-wise Dice for each focal cell type. "
-                    "For a control cell type (spinal cord) all three values should be similar; "
-                    "for disrupted types, between-group Dice drops below within-group. "
-                    "No p-values (small sample sizes make them uninformative).</p>")
+    # ── Section 3: Dice within vs between ─────────────────────────────────────
+    sections.append("<h2>4 · Within- vs between-group Dice — focal cell types</h2>")
+    sections.append("<p>Within-WT (3 pairs), within-Mutant (3 pairs), and between-group "
+                    "(9 pairs) Dice for each focal cell type. "
+                    "For a control (spinal cord) all three should be similar; "
+                    "for disrupted types, between-group Dice drops below within-group.</p>"
+                    '<div style="background:#fff8e1;border-left:4px solid #f9a825;'
+                    'border-radius:4px;padding:.7em 1em;margin:.8em 0;font-size:.9em">'
+                    "<b>⚠ Interpretation caveat:</b> when a cell type is nearly absent in the mutant, "
+                    "between-group Dice can appear artificially high — two near-empty volumes "
+                    "trivially agree on being empty. High between-group Dice is only meaningful "
+                    "when both groups actually have the tissue."
+                    "</div>")
     print("  fig: dice within vs between ...")
     fig = plot_dice_comparison(vols, type_to_id)
-    sections.append(img_tag(fig_to_b64(fig),
-        "Within-WT, within-Mutant, and between-group Dice for focal cell types. "
-        "A drop in between-group Dice (relative to within-group) indicates spatial "
-        "reorganisation in the mutant."))
+    sections.append(img_tag(fig_to_b64(fig), ""))
 
-    # ── Section 5: All-cell-type Dice summary ──────────────────────────────────
+    # ── Section 4: All-cell-type Dice summary ──────────────────────────────────
     sections.append("<h2>5 · Dice reproducibility — all cell types</h2>")
     sections.append("<p>For every cell type: mean within-WT, within-Mutant, and "
                     "between-group Dice, sorted by how much the between-group Dice "
@@ -1030,15 +1243,14 @@ Spinal cord (control) should be relatively unchanged.</p>
         "Full statistics table across all 34 cell types."))
 
     # 5. Write HTML
-    print(f"\n[5/6] Writing report → {OUT_HTML}")
+    print(f"\n[5/5] Writing report → {OUT_HTML}")
     html = build_html(sections)
     with open(OUT_HTML, "w") as fh:
         fh.write(html)
 
-    # 6. Also save volume CSV
     csv_path = os.path.join(SCRIPT_DIR, "volumes.csv")
     vol_df.to_csv(csv_path, index=False)
-    print(f"[6/6] Volume table saved → {csv_path}")
+    print(f"  Volume table saved → {csv_path}")
 
     print("\n=== Done ===")
     print(f"  Open: {OUT_HTML}")
