@@ -12,8 +12,8 @@ Experiment matrix (12 total):
 Registration is performed at full resolution (no downsampling).
 
 Fish groups:
-  WT:     1, 2, 3
-  Mutant: 4, 5, 6
+  WT:     4, 5, 6
+  Mutant: 1, 2, 3
 
 Input
 -----

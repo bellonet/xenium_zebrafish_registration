@@ -1,6 +1,6 @@
 """
-Snakemake workflow for the zebrafish registration pipeline (scripts 1–4).
-Script 5 (apply_registration) is run manually — see README.
+Snakemake workflow for the zebrafish registration pipeline (scripts 1–5).
+Script 6 (apply_registration) is run manually — see README.
 
 Usage (from the repo root):
     snakemake -j 6          # run pipeline, up to 6 parallel jobs
@@ -56,6 +56,8 @@ rule all:
         ),
         f"{ANALYSIS}/4_registered/evaluation.csv",
         f"{ANALYSIS}/4_registered/evaluation_per_fish.csv",
+        f"{ANALYSIS}/5_consensus/consensus_mask.tif",
+        expand(f"{ANALYSIS}/5_consensus/{{fish}}/cell_type_label.tif", fish=FISH),
 
 
 # ── script 1: crop and tag 2D slices ───────────────────────────────────────────
@@ -167,3 +169,28 @@ rule script4_evaluate:
         f"{ANALYSIS}/logs/script4_evaluate.log"
     shell:
         "{PYTHON} 4_cross_fish_registration.py --steps evaluate > {log} 2>&1"
+
+
+# ── script 5: yolk trimming / consensus mask ────────────────────────────────────
+
+rule script5:
+    """
+    Build a consensus mask that removes the yolk-sac region from registered volumes.
+    Computes within-group (WT vs mutant) cell-type agreement per z-slice, derives a
+    z cutoff where agreement permanently drops, and zeros out unreliable voxels.
+    Runs once after all script-4 outputs are available.
+    """
+    input:
+        expand(
+            f"{ANALYSIS}/4_registered/dapi_blend_rigid_affine_z10/{{fish}}/c0.tif",
+            fish=FISH,
+        )
+    output:
+        f"{ANALYSIS}/5_consensus/consensus_mask.tif",
+        f"{ANALYSIS}/5_consensus/cutoff_info.json",
+        f"{ANALYSIS}/5_consensus/qc_agreement_curve.png",
+        expand(f"{ANALYSIS}/5_consensus/{{fish}}/cell_type_label.tif", fish=FISH),
+    log:
+        f"{ANALYSIS}/logs/script5.log"
+    shell:
+        "{PYTHON} 5_trim_yolk.py > {log} 2>&1"

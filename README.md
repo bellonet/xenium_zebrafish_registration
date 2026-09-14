@@ -26,7 +26,7 @@ snakemake -j 6 -p       # also print each shell command as it runs
 ```
 
 Scripts 2 and 3 are parallelised by fish and by experiment automatically.
-Logs go to `../analysis/logs/`. Script 5 is not part of the workflow — run it manually (see below).
+Logs go to `../analysis/logs/`. Script 6 is not part of the workflow — run it manually (see below).
 
 To run scripts individually:
 
@@ -45,7 +45,7 @@ python3 4_cross_fish_registration.py
 
 Reads the raw Xenium morphology images (3 runs, 6 fish each). Detects which fish is which in each image by clustering cell centroids, crops each fish out, assigns a consistent fish ID (1-6) across runs, and saves per-fish 2D slice stacks.
 
-Output: `analysis/individual_fish_2d/{fish}/c{channel}/{global_slice}.tif`
+Output: `analysis/1_detection/individual_fish_2d/{fish}/c{channel}/{global_slice}.tif`
 
 Config: `INPUT_FOLDERS`, `NUM_CHANNELS`. Run from scratch with `--from-step tiles`. Use `--from-step tag` etc. to resume from a later step.
 
@@ -60,7 +60,7 @@ For each fish, registers every 2D slice independently. Two steps:
 1. Rotates each slice to align the dorsal-ventral axis, then runs elastix rigid registration to align slices to a common canvas.
 2. Applies the same transforms to segmentation outputs (seg_cells, seg_nuclei, cell_type_label, tissue_map). Label images use nearest-neighbour interpolation throughout so label boundaries stay sharp.
 
-Also generates per-gene expression images for use in script 3.
+Also generates per-gene transcript density images (for visualisation; script 3 loads transcripts directly).
 
 Output: `analysis/2_registered/{fish}/`
 
@@ -95,8 +95,8 @@ Config: `EXPERIMENTS`, `STEPS`. Run all by default; filter with `--experiments d
 Registers all fish into a shared 3D space using elastix. Each fish is registered to a reference fish (default: fish 1). Tries combinations of driving image and registration type.
 
 Driving images:
-- `dapi` / `dapi_blend`: fluorescence channel, uses NCC metric
-- `cell_type_map`: cell-type label image, uses Mutual Information (correct for discrete labels)
+- `dapi`: DAPI fluorescence, uses NCC metric
+- `dapi_blend`: 0.5 × DAPI + 0.5 × cell-type map, uses NCC metric
 
 Registration types: `rigid` or `rigid_affine`.
 
@@ -116,11 +116,13 @@ Config: `WT_FISH`, `MUTANT_FISH`, `DRIVING_OPTIONS`, `STAGES_OPTIONS`. Filter wi
 
 Identifies and removes the yolk-sac region (posterior z-slices where fish anatomy becomes inconsistent) by computing within-group cell-type agreement. Outputs a consensus mask and QC plots.
 
-See script docstring for full details.
+Run automatically by Snakemake after script 4. To run manually:
 
 ```bash
 python3 5_trim_yolk.py
 ```
+
+See script docstring for full details and tunable parameters (`--min-agreement`, `--z-threshold`).
 
 Output: `analysis/5_consensus/`
 

@@ -1,0 +1,1032 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Zebrafish Registration Pipeline</title>
+<style>
+  :root {
+    --s1: #4e79a7;
+    --s2: #59a14f;
+    --s3: #f28e2b;
+    --s4: #e15759;
+    --s5: #76b7b2;
+    --s6: #b07aa1;
+    --decision: #edc948;
+    --input-bg: #f0f4ff;
+    --output-bg: #f0fff4;
+    --param-bg: #fffbf0;
+    --connector: #999;
+    --bg: #fafafa;
+    --card-shadow: 0 2px 12px rgba(0,0,0,0.10);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: #222;
+    padding: 32px 24px 64px;
+    min-width: 960px;
+  }
+  h1 {
+    text-align: center;
+    font-size: 1.6rem;
+    font-weight: 700;
+    margin-bottom: 4px;
+    letter-spacing: -0.3px;
+  }
+  .subtitle {
+    text-align: center;
+    color: #666;
+    font-size: 0.92rem;
+    margin-bottom: 40px;
+  }
+
+  /* ── Legend ── */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    justify-content: center;
+    margin-bottom: 36px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.82rem;
+    color: #444;
+  }
+  .legend-swatch { width: 14px; height: 14px; border-radius: 3px; }
+  .legend-diamond {
+    width: 14px; height: 14px;
+    background: var(--decision);
+    transform: rotate(45deg);
+    border-radius: 2px;
+  }
+  .legend-io {
+    width: 14px; height: 14px;
+    border-radius: 3px;
+    border: 1.5px dashed #aaa;
+  }
+
+  /* ── Main flow column ── */
+  .pipeline {
+    max-width: 860px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+
+  /* ── Raw data / final nodes ── */
+  .data-node {
+    width: 100%;
+    background: #fff;
+    border: 2px dashed #bbb;
+    border-radius: 10px;
+    padding: 16px 22px 14px;
+  }
+  .data-node-header {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #999;
+    margin-bottom: 4px;
+  }
+  .data-node-title {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #333;
+    margin-bottom: 8px;
+  }
+  .data-node-body {
+    font-size: 0.86rem;
+    color: #555;
+    line-height: 1.6;
+  }
+  .data-node-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+  }
+  .data-tag {
+    background: #f0f0f0;
+    border: 1px solid #ddd;
+    border-radius: 14px;
+    padding: 2px 10px;
+    font-size: 0.78rem;
+    color: #555;
+  }
+
+  /* ── Image gallery ── */
+  .img-gallery {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 12px;
+  }
+  .img-slot {
+    position: relative;
+    border-radius: 7px;
+    overflow: hidden;
+    border: 1.5px solid #ddd;
+    background: #f8f8f8;
+    min-width: 120px;
+    min-height: 90px;
+    flex: 1 1 120px;
+    max-width: 220px;
+    display: flex;
+    flex-direction: column;
+  }
+  .img-slot img {
+    width: 100%;
+    height: auto;
+    display: block;
+    cursor: zoom-in;
+  }
+  .img-slot .img-caption {
+    font-size: 0.72rem;
+    color: #777;
+    padding: 4px 6px;
+    text-align: center;
+    background: #fafafa;
+    border-top: 1px solid #eee;
+  }
+  /* Placeholder shown when src is missing */
+  .img-placeholder {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 14px 8px;
+    color: #bbb;
+    font-size: 0.75rem;
+    text-align: center;
+    gap: 6px;
+  }
+  .img-placeholder .ph-icon { font-size: 1.6rem; }
+  .img-slot.has-img .img-placeholder { display: none; }
+
+  /* Lightbox */
+  #lightbox {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.82);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+    cursor: zoom-out;
+  }
+  #lightbox.open { display: flex; }
+  #lightbox img { max-width: 90vw; max-height: 90vh; border-radius: 6px; box-shadow: 0 8px 40px rgba(0,0,0,0.5); }
+  #lightbox-caption { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); color: #ddd; font-size: 0.85rem; }
+
+  /* ── Connector arrows ── */
+  .connector {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    color: var(--connector);
+    line-height: 1;
+    padding: 2px 0;
+  }
+  .connector-line { width: 2px; background: #ccc; height: 20px; }
+  .connector-arrow {
+    width: 0; height: 0;
+    border-left: 7px solid transparent;
+    border-right: 7px solid transparent;
+    border-top: 10px solid #bbb;
+  }
+  .connector-label {
+    font-size: 0.73rem;
+    color: #888;
+    background: var(--bg);
+    padding: 0 6px;
+    margin: 2px 0;
+    letter-spacing: 0.3px;
+    text-align: center;
+    max-width: 500px;
+  }
+
+  /* ── Script card ── */
+  .script-card {
+    width: 100%;
+    border-radius: 12px;
+    box-shadow: var(--card-shadow);
+    overflow: hidden;
+    border: 1.5px solid transparent;
+    transition: box-shadow 0.2s;
+  }
+  .script-card:hover { box-shadow: 0 4px 22px rgba(0,0,0,0.16); }
+
+  .script-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 20px;
+    color: #fff;
+    cursor: pointer;
+    user-select: none;
+  }
+  .script-num {
+    font-size: 1.5rem;
+    font-weight: 800;
+    opacity: 0.85;
+    min-width: 32px;
+  }
+  .script-title-block { flex: 1; }
+  .script-title { font-size: 1.05rem; font-weight: 700; }
+  .script-subtitle { font-size: 0.82rem; opacity: 0.88; margin-top: 2px; }
+  .toggle-hint { font-size: 0.78rem; opacity: 0.7; white-space: nowrap; }
+
+  .script-body {
+    background: #fff;
+    padding: 0 20px;
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.4s ease, padding 0.2s;
+  }
+  .script-body.open {
+    max-height: 2000px;
+    padding: 18px 20px 22px;
+  }
+
+  /* Context block — visible summary shown under each header even collapsed */
+  .script-context {
+    background: #fff;
+    padding: 10px 20px 12px 74px; /* indent past the number */
+    font-size: 0.84rem;
+    color: #555;
+    line-height: 1.55;
+    border-top: 1px solid rgba(255,255,255,0.25);
+  }
+
+  /* ── IO / Params grid inside card ── */
+  .io-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .io-box {
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 0.82rem;
+  }
+  .io-box.input  { background: var(--input-bg);  border: 1px dashed #90b0f0; }
+  .io-box.output { background: var(--output-bg); border: 1px dashed #72c47a; }
+  .io-box h4 {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 6px;
+    color: #555;
+  }
+  .io-box ul { list-style: none; padding: 0; }
+  .io-box li { padding: 2px 0; color: #444; }
+  .io-box li::before { content: "▸ "; color: #aaa; }
+
+  .steps-section { margin-bottom: 14px; }
+  .steps-section h4 {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: #555;
+    margin-bottom: 8px;
+  }
+  .steps-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .step-chip {
+    background: #f0f0f0;
+    border-radius: 20px;
+    padding: 3px 10px;
+    font-size: 0.78rem;
+    color: #444;
+    border: 1px solid #ddd;
+  }
+
+  .params-box {
+    background: var(--param-bg);
+    border: 1px dashed #e0c060;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 0.8rem;
+    margin-bottom: 14px;
+  }
+  .params-box h4 {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: #777;
+    margin-bottom: 6px;
+  }
+  .params-box ul { list-style: none; padding: 0; }
+  .params-box li { padding: 2px 0; color: #555; }
+  .params-box li::before { content: "⚙ "; color: #c8a000; }
+
+  .gallery-section h4 {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: #555;
+    margin-bottom: 8px;
+  }
+
+  /* ── Decision diamond ── */
+  .decision-wrapper {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    gap: 0;
+  }
+  .diamond-outer {
+    position: relative;
+    width: 360px;
+    height: 84px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .diamond-shape {
+    width: 180px;
+    height: 180px;
+    background: var(--decision);
+    transform: rotate(45deg) scale(0.44);
+    border-radius: 8px;
+    position: absolute;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.13);
+  }
+  .diamond-label {
+    position: relative;
+    z-index: 1;
+    text-align: center;
+    font-weight: 700;
+    font-size: 0.88rem;
+    color: #4a3300;
+    max-width: 280px;
+    line-height: 1.35;
+  }
+  .decision-note {
+    font-size: 0.78rem;
+    color: #888;
+    text-align: center;
+    margin-top: 3px;
+    margin-bottom: 4px;
+    max-width: 560px;
+    line-height: 1.5;
+  }
+
+  /* ── Final output ── */
+  .final-node {
+    width: 100%;
+    background: #fff;
+    border: 2px solid #b07aa1;
+    border-radius: 10px;
+    padding: 16px 22px;
+  }
+  .final-node .data-node-header { color: #b07aa1; }
+  .final-node .data-node-title { color: #7a3a8a; }
+  .final-outputs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .final-chip {
+    background: #f5eeff;
+    border: 1px solid #c9a0dc;
+    border-radius: 16px;
+    padding: 3px 12px;
+    font-size: 0.8rem;
+    color: #5a2a7a;
+  }
+
+  /* ── Script color classes ── */
+  .s1 .script-header { background: var(--s1); }
+  .s2 .script-header { background: var(--s2); }
+  .s3 .script-header { background: var(--s3); }
+  .s4 .script-header { background: var(--s4); }
+  .s5 .script-header { background: var(--s5); }
+  .s6 .script-header { background: var(--s6); }
+
+  .s1 { border-color: var(--s1); }
+  .s2 { border-color: var(--s2); }
+  .s3 { border-color: var(--s3); }
+  .s4 { border-color: var(--s4); }
+  .s5 { border-color: var(--s5); }
+  .s6 { border-color: var(--s6); }
+
+  .s1 .script-context { border-top: 1px solid #d0e0f0; }
+  .s2 .script-context { border-top: 1px solid #c5e0c0; }
+  .s3 .script-context { border-top: 1px solid #f5d8a0; }
+  .s4 .script-context { border-top: 1px solid #f5c0c0; }
+  .s5 .script-context { border-top: 1px solid #c0e0de; }
+  .s6 .script-context { border-top: 1px solid #dcc8dc; }
+</style>
+</head>
+<body>
+
+<!-- Lightbox -->
+<div id="lightbox" onclick="closeLightbox()">
+  <img id="lightbox-img" src="" alt="">
+  <div id="lightbox-caption"></div>
+</div>
+
+<h1>Zebrafish Registration Pipeline</h1>
+<p class="subtitle">6 scripts &nbsp;·&nbsp; spatial transcriptomics registration pipeline</p>
+<div style="text-align:center; margin-bottom:32px">
+  <button onclick="toggleAll()" id="expand-btn" style="padding:8px 22px; font-size:0.9rem; border-radius:20px; border:1.5px solid #bbb; background:#fff; cursor:pointer; color:#444; font-family:inherit;">Detailed view</button>
+</div>
+
+
+<div class="pipeline">
+
+  <!-- ── Raw input ── -->
+  <div class="data-node">
+    <div class="data-node-header">Input data</div>
+    <div class="data-node-title">Raw zebrafish embryo tail Xenium images</div>
+    <div class="data-node-body">
+      6 zebrafish embryos — 3 wild-type, 3 mutant — each sectioned into multiple 2D transverse slices
+      and imaged across <strong>3 separate Xenium slides</strong> (runs). Each run captures ~2 fish.
+      Data includes morphology images, spatial transcript coordinates, and cell segmentation masks.
+    </div>
+    <div class="data-node-tags">
+      <span class="data-tag">6 fish (3 WT + 3 mutant)</span>
+      <span class="data-tag">3 Xenium slides / runs</span>
+      <span class="data-tag">~2 fish per slide</span>
+      <span class="data-tag">2D slices (transverse sections)</span>
+      <span class="data-tag">OME-TIFF morphology</span>
+      <span class="data-tag">transcripts.parquet</span>
+      <span class="data-tag">cells.zarr segmentation</span>
+    </div>
+    <!-- Images of raw data -->
+    <div class="img-gallery" style="margin-top:14px">
+      <div class="img-slot" id="slot-raw-1">
+        <img src="" alt="Raw morphology overview" onerror="this.style.display='none'" onload="this.closest('.img-slot').classList.add('has-img'); openImg(this)" style="cursor:zoom-in">
+        <div class="img-placeholder"><div class="ph-icon">🔬</div>Raw morphology<br>(add image)</div>
+        <div class="img-caption">Raw DAPI overview — full Xenium tile</div>
+      </div>
+      <div class="img-slot" id="slot-raw-2">
+        <img src="" alt="Example fish section" onerror="this.style.display='none'" onload="this.closest('.img-slot').classList.add('has-img'); openImg(this)" style="cursor:zoom-in">
+        <div class="img-placeholder"><div class="ph-icon">🐟</div>Example section<br>(add image)</div>
+        <div class="img-caption">Single fish — 2D transverse slice</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line"></div><div class="connector-arrow"></div></div>
+
+  <!-- ── Script 1 ── -->
+  <div class="script-card s1">
+    <div class="script-header" onclick="toggle('s1')">
+      <div class="script-num">1</div>
+      <div class="script-title-block">
+        <div class="script-title">Crop &amp; Tag 2D Slices</div>
+        <div class="script-subtitle">1_crop_and_tag_2d_slices.py</div>
+      </div>
+      <div class="toggle-hint" id="hint-s1">▾ details</div>
+    </div>
+    <div class="script-context">
+      Detects and crops individual fish from each slide, assigns consistent IDs across tiles and runs,
+      and orders slices by Z-position into a unified stack per fish.
+    </div>
+    <div class="script-body" id="s1">
+      <div class="io-grid">
+        <div class="io-box input">
+          <h4>Inputs</h4>
+          <ul>
+            <li>morphology_focus OME-TIFF (3 runs)</li>
+            <li>cells.parquet (cell centroids, for clustering)</li>
+          </ul>
+        </div>
+        <div class="io-box output">
+          <h4>Outputs</h4>
+          <ul>
+            <li>individual_fish_2d/{fish}/c{ch}/{gnum}_{run}_{tile}.tif</li>
+            <li>zfish_bboxs_tagged_final.csv</li>
+            <li>tile_rotation.csv</li>
+            <li>fish_bbox_summary_tagged_*.csv</li>
+            <li>QC PNGs (tiles, bboxes, rescues)</li>
+          </ul>
+        </div>
+      </div>
+      <div class="steps-section">
+        <h4>Steps (resumable with --from-step)</h4>
+        <div class="steps-list">
+          <span class="step-chip">tiles</span>
+          <span class="step-chip">bboxes</span>
+          <span class="step-chip">crop</span>
+          <span class="step-chip">tag</span>
+          <span class="step-chip">rescue</span>
+          <span class="step-chip">save_dapi</span>
+          <span class="step-chip">unify</span>
+        </div>
+      </div>
+      <div class="params-box">
+        <h4>Key parameters &amp; manual choices</h4>
+        <ul>
+          <li>IGNORE_TILES — manually skip bad tiles per run</li>
+          <li>DELETE_SLICES — manually remove known-bad slices per fish</li>
+          <li>Fish size filter: 22–250 µm; ≥15 cells/fish required</li>
+          <li>ID tagging: rotation sweep −25° to +25° (step 5°) to find best 2-row layout</li>
+          <li>Run ordering by NCC — automatic, but result should be inspected</li>
+        </ul>
+      </div>
+      <div class="gallery-section">
+        <h4>Example outputs</h4>
+        <div class="img-gallery">
+          <div class="img-slot">
+            <img src="" alt="Tile with bboxes" onerror="this.style.display='none'" onload="this.closest('.img-slot').classList.add('has-img'); enableZoom(this)">
+            <div class="img-placeholder"><div class="ph-icon">📦</div>Fish bounding boxes<br>(add image)</div>
+            <div class="img-caption">Detected fish bboxes on tile</div>
+          </div>
+          <div class="img-slot">
+            <img src="" alt="Tagged fish layout" onerror="this.style.display='none'" onload="this.closest('.img-slot').classList.add('has-img'); enableZoom(this)">
+            <div class="img-placeholder"><div class="ph-icon">🏷️</div>Fish ID tagging<br>(add image)</div>
+            <div class="img-caption">Fish IDs assigned by spatial layout</div>
+          </div>
+          <div class="img-slot">
+            <img src="" alt="Single fish crop" onerror="this.style.display:'none'" onload="this.closest('.img-slot').classList.add('has-img'); enableZoom(this)">
+            <div class="img-placeholder"><div class="ph-icon">✂️</div>Cropped single fish<br>(add image)</div>
+            <div class="img-caption">Individual fish 2D slice crop</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector">
+    <div class="connector-line"></div>
+    <div class="connector-label">individual_fish_2d/{fish}/c{ch}/{gnum}.tif — ordered 2D slices per fish, 4 channels</div>
+    <div class="connector-line"></div>
+    <div class="connector-arrow"></div>
+  </div>
+
+  <!-- ── Script 2 ── -->
+  <div class="script-card s2">
+    <div class="script-header" onclick="toggle('s2')">
+      <div class="script-num">2</div>
+      <div class="script-title-block">
+        <div class="script-title">Rigid 2D Registration (within fish)</div>
+        <div class="script-subtitle">2_rigid_registration.py</div>
+      </div>
+      <div class="toggle-hint" id="hint-s2">▾ details</div>
+    </div>
+    <div class="script-context">
+      Aligns all 2D slices per fish into a common canvas using DV rotation + elastix rigid registration,
+      then assembles 3D stacks including segmentation and per-gene transcript density.
+    </div>
+    <div class="script-body" id="s2">
+      <div class="io-grid">
+        <div class="io-box input">
+          <h4>Inputs</h4>
+          <ul>
+            <li>individual_fish_2d/{fish}/c{ch}/*.tif</li>
+            <li>fish_bbox_summary_tagged_*.csv</li>
+            <li>transcripts.parquet (per run, for DV rotation + per-gene)</li>
+            <li>cells.parquet, cells.zarr (segmentation)</li>
+            <li>leiden10annots.csv (cell type labels)</li>
+          </ul>
+        </div>
+        <div class="io-box output">
+          <h4>Outputs</h4>
+          <ul>
+            <li>2_registered/{fish}/rigid_3d_c{ch}.tif (3D stacks)</li>
+            <li>transforms/{gnum}.txt (elastix params per slice)</li>
+            <li>transforms.json (DV angles, canvas size, crop box)</li>
+            <li>seg_cells_3d.tif, seg_nuclei_3d.tif</li>
+            <li>tissue_map_3d.tif, cell_type_label_3d.tif</li>
+            <li>per_gene/{gene}.tif (top-40 SVGs + markers)</li>
+          </ul>
+        </div>
+      </div>
+      <div class="steps-section">
+        <h4>Steps (selectable with --steps)</h4>
+        <div class="steps-list">
+          <span class="step-chip">register</span>
+          <span class="step-chip">segmentation</span>
+          <span class="step-chip">stack</span>
+          <span class="step-chip">per_gene</span>
+        </div>
+      </div>
+      <div class="params-box">
+        <h4>Key parameters</h4>
+        <ul>
+          <li>Propagation outward from middle slice (minimises drift accumulation)</li>
+          <li>DV rotation: dorsal genes (pax6b, scrt2, sox3…) vs ventral (etv2, foxa3…); ≥5 transcripts each, min 1° applied</li>
+          <li>Elastix: Mutual Information, 3 resolutions, 256 iter, 6000 samples, 8 threads</li>
+          <li>Per-gene: top-40 spatially variable + structural markers, σ=10 µm Gaussian blur</li>
+          <li>RUN_FOLDERS dict must match Script 1 run names</li>
+        </ul>
+      </div>
+      <div class="gallery-section">
+        <h4>Example outputs</h4>
+        <div class="img-gallery">
+          <div class="img-slot">
+            <img src="" alt="Registered slices" onerror="this.style.display:'none'" onload="this.closest('.img-slot').classList.add('has-img'); enableZoom(this)">
+            <div class="img-placeholder"><div class="ph-icon">📐</div>Registered slices<br>(add image)</div>
+            <div class="img-caption">Before / after registration</div>
+          </div>
+          <div class="img-slot">
+            <img src="" alt="3D DAPI stack" onerror="this.style.display:'none'" onload="this.closest('.img-slot').classList.add('has-img'); enableZoom(this)">
+            <div class="img-placeholder"><div class="ph-icon">🧊</div>3D DAPI stack<br>(add image)</div>
+            <div class="img-caption">rigid_3d_c0.tif — max projection</div>
+          </div>
+          <div class="img-slot">
+            <img src="" alt="Cell type map" onerror="this.style.display:'none'" onload="this.closest('.img-slot').classList.add('has-img'); enableZoom(this)">
+            <div class="img-placeholder"><div class="ph-icon">🎨</div>Cell type map<br>(add image)</div>
+            <div class="img-caption">tissue_map — cell types coloured</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector">
+    <div class="connector-line"></div>
+    <div class="connector-label">2_registered/{fish}/ — 3D stacks per channel + segmentation + transforms.json</div>
+    <div class="connector-line"></div>
+    <div class="connector-arrow"></div>
+  </div>
+
+  <!-- ── Script 3 ── -->
+  <div class="script-card s3">
+    <div class="script-header" onclick="toggle('s3')">
+      <div class="script-num">3</div>
+      <div class="script-title-block">
+        <div class="script-title">Registration Experiments (2nd-pass correction)</div>
+        <div class="script-subtitle">3_registration_experiments.py</div>
+      </div>
+      <div class="toggle-hint" id="hint-s3">▾ details</div>
+    </div>
+    <div class="script-context">
+      Runs a correction pass on script 2's result using 4 alternative driving images
+      (cell-type maps, gene composites, blends) and evaluates each quantitatively.
+    </div>
+    <div class="script-body" id="s3">
+      <div class="io-grid">
+        <div class="io-box input">
+          <h4>Inputs</h4>
+          <ul>
+            <li>2_registered/{fish}/c0/*.tif (DAPI registered)</li>
+            <li>2_registered/{fish}/tissue_map/*.tif</li>
+            <li>transcripts.parquet (gene composites)</li>
+            <li>transforms.json (canvas / DV info)</li>
+          </ul>
+        </div>
+        <div class="io-box output">
+          <h4>Outputs per experiment × fish</h4>
+          <ul>
+            <li>3_improved_registration/{exp}/{fish}/c0_3d.tif</li>
+            <li>correction_transforms.json (δ angle, tx, ty per slice)</li>
+            <li>evaluation_fish{N}.csv (NCC, smoothness, sharpness)</li>
+          </ul>
+        </div>
+      </div>
+      <div class="steps-section">
+        <h4>Steps</h4>
+        <div class="steps-list">
+          <span class="step-chip">register</span>
+          <span class="step-chip">evaluate</span>
+        </div>
+      </div>
+      <div class="params-box">
+        <h4>4 experiments tested</h4>
+        <ul>
+          <li>tissue_mask — grayscale cell-type label map</li>
+          <li>gene_composite — tp63 + myod1 + tbxta + sox3 density (σ=3 µm)</li>
+          <li>dapi_blend — 0.5×DAPI + 0.5×cell-type map</li>
+          <li>multi_metric — 0.6×cell-type + 0.4×gene composite</li>
+        </ul>
+        <ul style="margin-top:6px">
+          <li>Metric: NCC (AdvancedNormalizedCorrelation), 200 iter</li>
+          <li>Evaluation: ncc_dapi, ncc_tissue, smooth_px, smooth_deg, Z-sharpness</li>
+        </ul>
+      </div>
+      <div class="gallery-section">
+        <h4>Evaluation output</h4>
+        <div class="img-gallery">
+          <div class="img-slot">
+            <img src="" alt="Evaluation table" onerror="this.style.display:'none'" onload="this.closest('.img-slot').classList.add('has-img'); enableZoom(this)">
+            <div class="img-placeholder"><div class="ph-icon">📊</div>Evaluation metrics<br>(add image)</div>
+            <div class="img-caption">evaluation_fish{N}.csv — NCC + smoothness scores</div>
+          </div>
+          <div class="img-slot">
+            <img src="" alt="Correction comparison" onerror="this.style.display:'none'" onload="this.closest('.img-slot').classList.add('has-img'); enableZoom(this)">
+            <div class="img-placeholder"><div class="ph-icon">🔍</div>Before/after correction<br>(add image)</div>
+            <div class="img-caption">Max projection before vs after correction</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line"></div><div class="connector-line"></div></div>
+
+  <!-- ── Decision 1 ── -->
+  <div class="decision-wrapper">
+    <div class="diamond-outer">
+      <div class="diamond-shape"></div>
+      <div class="diamond-label">👤 Manual decision<br>Choose best correction experiment</div>
+    </div>
+    <div class="decision-note">
+      Inspect <code>evaluation_fish{N}.csv</code> — compare <em>ncc_dapi</em>, <em>ncc_tissue</em>, <em>smooth_px</em>, <em>smooth_deg</em><br>
+      Chosen experiment name → passed to Script 4 &amp; hard-coded into Script 6 as <code>SCRIPT3_EXP</code>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line"></div><div class="connector-arrow"></div></div>
+
+  <!-- ── Script 4 ── -->
+  <div class="script-card s4">
+    <div class="script-header" onclick="toggle('s4')">
+      <div class="script-num">4</div>
+      <div class="script-title-block">
+        <div class="script-title">Cross-Fish 3D Registration</div>
+        <div class="script-subtitle">4_cross_fish_registration.py</div>
+      </div>
+      <div class="toggle-hint" id="hint-s4">▾ details</div>
+    </div>
+    <div class="script-context">
+      Registers all 6 fish volumes to a single reference fish in 3D,
+      testing 4 strategy combinations and evaluating WT and mutant groups separately.
+    </div>
+    <div class="script-body" id="s4">
+      <div class="io-grid">
+        <div class="io-box input">
+          <h4>Inputs</h4>
+          <ul>
+            <li>3_improved/{best_exp}/{fish}/c0_3d.tif (corrected DAPI)</li>
+            <li>2_registered/{fish}/rigid_3d_c{1,2,3}.tif (fluorescence)</li>
+            <li>tissue_map_3d.tif (for dapi_blend driving)</li>
+            <li>seg_cells_3d.tif, seg_nuclei_3d.tif, cell_type_label_3d.tif</li>
+          </ul>
+        </div>
+        <div class="io-box output">
+          <h4>Outputs per experiment × fish</h4>
+          <ul>
+            <li>4_registered/{exp}/{fish}/c{ch}.tif (3D float32)</li>
+            <li>seg_cells.tif, seg_nuclei.tif, cell_type_label.tif</li>
+            <li>transform.json (full 3D transform parameters)</li>
+            <li>evaluation.csv, evaluation_per_fish.csv</li>
+          </ul>
+        </div>
+      </div>
+      <div class="steps-section">
+        <h4>Steps</h4>
+        <div class="steps-list">
+          <span class="step-chip">register</span>
+          <span class="step-chip">evaluate</span>
+        </div>
+      </div>
+      <div class="params-box">
+        <h4>4 experiment combinations (2 driving × 2 stages × 1 Z-spacing)</h4>
+        <ul>
+          <li>Driving: dapi | dapi_blend (cell_type_map excluded after evaluation)</li>
+          <li>Stages: rigid | rigid_affine (affine corrects scaling/shear)</li>
+          <li>Z-spacing: 10 µm confirmed; XY at full resolution (DOWNSAMPLE_XY=1)</li>
+          <li>Elastix rigid: 4 resolutions, 500 iter; affine: 3 resolutions, 300 iter</li>
+          <li>Reference fish: default=1 (set with --reference flag)</li>
+          <li>Eval: NCC + Dice vs reference, grouped WT (fish 4,5,6) vs Mutant (1,2,3)</li>
+        </ul>
+      </div>
+      <div class="gallery-section">
+        <h4>Evaluation output</h4>
+        <div class="img-gallery">
+          <div class="img-slot">
+            <img src="" alt="Cross-fish evaluation" onerror="this.style.display:'none'" onload="this.closest('.img-slot').classList.add('has-img'); enableZoom(this)">
+            <div class="img-placeholder"><div class="ph-icon">📊</div>Evaluation CSV<br>(add image)</div>
+            <div class="img-caption">NCC + Dice per channel, WT vs mutant</div>
+          </div>
+          <div class="img-slot">
+            <img src="" alt="Registered volumes overlay" onerror="this.style.display:'none'" onload="this.closest('.img-slot').classList.add('has-img'); enableZoom(this)">
+            <div class="img-placeholder"><div class="ph-icon">🐠</div>All fish overlaid<br>(add image)</div>
+            <div class="img-caption">6 fish volumes in common space</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line"></div><div class="connector-line"></div></div>
+
+  <!-- ── Decision 2 ── -->
+  <div class="decision-wrapper">
+    <div class="diamond-outer">
+      <div class="diamond-shape"></div>
+      <div class="diamond-label">👤 Manual decision<br>Choose best cross-fish experiment</div>
+    </div>
+    <div class="decision-note">
+      Inspect <code>evaluation.csv</code> + <code>evaluation_per_fish.csv</code> — NCC and Dice per channel<br>
+      Chosen name → hard-coded into Script 5 as <code>EXPERIMENT</code> and Script 6 as <code>SCRIPT4_EXP</code>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line"></div><div class="connector-arrow"></div></div>
+
+  <!-- ── Script 5 ── -->
+  <div class="script-card s5">
+    <div class="script-header" onclick="toggle('s5')">
+      <div class="script-num">5</div>
+      <div class="script-title-block">
+        <div class="script-title">Trim Yolk Sac</div>
+        <div class="script-subtitle">5_trim_yolk.py</div>
+      </div>
+      <div class="toggle-hint" id="hint-s5">▾ details</div>
+    </div>
+    <div class="script-context">
+      Removes the yolk sac region using a per-group consensus mask (WT and mutant separately),
+      preserving real biological differences while excluding noisy posterior slices.
+    </div>
+    <div class="script-body" id="s5">
+      <div class="io-grid">
+        <div class="io-box input">
+          <h4>Inputs</h4>
+          <ul>
+            <li>4_registered/{best_exp}/{fish}/cell_type_label.tif — all 6 fish</li>
+          </ul>
+        </div>
+        <div class="io-box output">
+          <h4>Outputs</h4>
+          <ul>
+            <li>5_consensus/consensus_mask.tif — (Z_trim, H, W) binary keep mask</li>
+            <li>cutoff_info.json</li>
+            <li>qc_agreement_curve.png ← validate this!</li>
+            <li>5_consensus/{fish}/cell_type_label.tif — masked &amp; Z-trimmed</li>
+          </ul>
+        </div>
+      </div>
+      <div class="params-box">
+        <h4>Key parameters (tunable with CLI flags)</h4>
+        <ul>
+          <li>EXPERIMENT — must be hard-coded to the Script 4 choice</li>
+          <li>MIN_AGREEMENT=2/3 — ≥2 of 3 fish per group must agree on tissue presence</li>
+          <li>Z_AGREEMENT_THRESHOLD=0.5 — Z-slices below this mean agreement excluded</li>
+          <li>Groups: WT = fish 4,5,6 · Mutant = fish 1,2,3</li>
+          <li>Run automatically by Snakemake after script 4</li>
+          <li>Always inspect qc_agreement_curve.png to validate Z cutoff</li>
+        </ul>
+      </div>
+      <div class="gallery-section">
+        <h4>QC output</h4>
+        <div class="img-gallery">
+          <div class="img-slot">
+            <img src="" alt="Agreement curve" onerror="this.style.display:'none'" onload="this.closest('.img-slot').classList.add('has-img'); enableZoom(this)">
+            <div class="img-placeholder"><div class="ph-icon">📈</div>qc_agreement_curve.png<br>(add image)</div>
+            <div class="img-caption">Per-Z within-group agreement with Z cutoff</div>
+          </div>
+          <div class="img-slot">
+            <img src="" alt="Masked volume" onerror="this.style.display:'none'" onload="this.closest('.img-slot').classList.add('has-img'); enableZoom(this)">
+            <div class="img-placeholder"><div class="ph-icon">✂️</div>Masked cell-type label<br>(add image)</div>
+            <div class="img-caption">After yolk/tail trimming</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector">
+    <div class="connector-line"></div>
+    <div class="connector-label">5_consensus/{fish}/cell_type_label.tif + consensus_mask.tif — yolk removed</div>
+    <div class="connector-line"></div>
+    <div class="connector-arrow"></div>
+  </div>
+
+  <!-- ── Script 6 ── -->
+  <div class="script-card s6">
+    <div class="script-header" onclick="toggle('s6')">
+      <div class="script-num">6</div>
+      <div class="script-title-block">
+        <div class="script-title">Apply Full Registration Stack</div>
+        <div class="script-subtitle">6_apply_registration.py</div>
+      </div>
+      <div class="toggle-hint" id="hint-s6">▾ details</div>
+    </div>
+    <div class="script-context">
+      Projects transcripts, cell centroids, or custom images into the final registered space,
+      composing all transform layers into a single resampling step to minimise interpolation error.
+    </div>
+    <div class="script-body" id="s6">
+      <div class="io-grid">
+        <div class="io-box input">
+          <h4>Inputs</h4>
+          <ul>
+            <li>transforms.json (Script 2 — layer 1 per-slice rigid)</li>
+            <li>correction_transforms.json (Script 3 — layer 2 correction)</li>
+            <li>transform.json (Script 4 — layer 3, 3D affine/rigid)</li>
+            <li>transcripts.parquet and/or cells.parquet</li>
+            <li>Optional: custom (Z, H, W) TIFF</li>
+          </ul>
+        </div>
+        <div class="io-box output">
+          <h4>Outputs</h4>
+          <ul>
+            <li>6_applied/transcripts_registered_fish{N}.parquet</li>
+            <li>6_applied/cells_registered_fish{N}.parquet</li>
+            <li>(new columns: x_reg_px, y_reg_px, x_reg_ds, y_reg_ds, z_reg)</li>
+            <li>6_applied/{name}_registered_fish{N}.tif (if image provided)</li>
+          </ul>
+        </div>
+      </div>
+      <div class="params-box">
+        <h4>Configuration (edit top of file before running)</h4>
+        <ul>
+          <li>FISH, RUN — which fish and which Xenium run to process</li>
+          <li>SCRIPT3_EXP — chosen Script 3 experiment name</li>
+          <li>SCRIPT4_EXP — chosen Script 4 experiment name</li>
+          <li>REFERENCE_FISH=1 — must match Script 4 reference</li>
+          <li>APPLY_TO_TRANSCRIPTS / APPLY_TO_CELLS / APPLY_TO_IMAGE — toggle what to run</li>
+          <li>NN_INTERPOLATION=False — set True for label/segmentation images</li>
+        </ul>
+      </div>
+      <div class="gallery-section">
+        <h4>Example outputs</h4>
+        <div class="img-gallery">
+          <div class="img-slot">
+            <img src="" alt="Registered transcripts" onerror="this.style.display:'none'" onload="this.closest('.img-slot').classList.add('has-img'); enableZoom(this)">
+            <div class="img-placeholder"><div class="ph-icon">🗺️</div>Registered transcripts<br>(add image)</div>
+            <div class="img-caption">Transcript coordinates in registered space</div>
+          </div>
+          <div class="img-slot">
+            <img src="" alt="All fish merged" onerror="this.style.display:'none'" onload="this.closest('.img-slot').classList.add('has-img'); enableZoom(this)">
+            <div class="img-placeholder"><div class="ph-icon">🧬</div>All fish merged<br>(add image)</div>
+            <div class="img-caption">6 fish transcriptomes in shared space</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"><div class="connector-line"></div><div class="connector-arrow"></div></div>
+
+  <!-- ── Final output ── -->
+  <div class="data-node final-node">
+    <div class="data-node-header">Pipeline output</div>
+    <div class="data-node-title">🎯 Registered zebrafish transcriptome atlas</div>
+    <div class="data-node-body">
+      All 6 fish (3 WT + 3 mutant) aligned to a common coordinate space, yolk sac removed,
+      ready for cross-fish comparison: differential gene expression, cell-type composition,
+      spatial domain analysis.
+    </div>
+    <div class="final-outputs">
+      <span class="final-chip">transcripts_registered_fish{N}.parquet</span>
+      <span class="final-chip">cells_registered_fish{N}.parquet</span>
+      <span class="final-chip">consensus cell-type volumes</span>
+      <span class="final-chip">any custom registered TIFFs</span>
+    </div>
+  </div>
+
+</div><!-- /pipeline -->
+
+<script>
+function toggle(id) {
+  const body = document.getElementById(id);
+  body.classList.toggle('open');
+  const hint = document.getElementById('hint-' + id);
+  hint.textContent = body.classList.contains('open') ? '▴ close' : '▾ details';
+}
+
+function toggleAll() {
+  const bodies = document.querySelectorAll('.script-body');
+  const anyOpen = [...bodies].some(b => b.classList.contains('open'));
+  bodies.forEach(b => {
+    const id = b.id;
+    const hint = document.getElementById('hint-' + id);
+    if (anyOpen) {
+      b.classList.remove('open');
+      if (hint) hint.textContent = '▾ details';
+    } else {
+      b.classList.add('open');
+      if (hint) hint.textContent = '▴ close';
+    }
+  });
+  const btn = document.getElementById('expand-btn');
+  btn.textContent = anyOpen ? 'Detailed view' : 'Collapse';
+}
+
+function enableZoom(img) {
+  img.style.cursor = 'zoom-in';
+  img.addEventListener('click', () => openImg(img));
+}
+
+function openImg(img) {
+  const lb = document.getElementById('lightbox');
+  document.getElementById('lightbox-img').src = img.src;
+  document.getElementById('lightbox-caption').textContent =
+    img.closest('.img-slot').querySelector('.img-caption').textContent;
+  lb.classList.add('open');
+}
+
+function closeLightbox() {
+  document.getElementById('lightbox').classList.remove('open');
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
+</script>
+
+</body>
+</html>
