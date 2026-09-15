@@ -309,7 +309,7 @@ def plot_composition(vol_df):
     fig, ax = plt.subplots(figsize=(13, 7))
 
     lefts = {f: 0.0 for f in fish_order}
-    for ct in reversed(cell_order):   # reversed so largest is leftmost
+    for ct in cell_order:   # largest first so largest segment is leftmost
         sub  = vol_df[vol_df["cell_type"] == ct].set_index("fish")["pct"]
         vals = [sub.get(f, 0.0) for f in fish_order]
         ys   = [y_pos[f] for f in fish_order]
@@ -357,6 +357,50 @@ def plot_composition(vol_df):
     ax.set_ylim(min(yticks) - 0.5, max(yticks) + 0.5)
     fig.tight_layout()
     return fig
+
+def plot_composition_summary(vol_df):
+    """Grouped horizontal bar chart: average % per cell type, WT vs Mutant.
+
+    Each cell type gets two bars (WT teal, Mutant magenta), sorted by WT
+    average descending.  Focal types are highlighted in bold.
+    """
+    totals = vol_df.groupby("fish")["vol_um3"].transform("sum")
+    df = vol_df.copy()
+    df["pct"] = df["vol_um3"] / totals * 100
+
+    avg = df.groupby(["cell_type", "group"])["pct"].mean().unstack().fillna(0)
+    wt_avg  = avg.get("WT",     pd.Series(dtype=float))
+    mut_avg = avg.get("Mutant", pd.Series(dtype=float))
+
+    # Sort by WT average descending
+    order = wt_avg.sort_values(ascending=True).index.tolist()
+    n = len(order)
+
+    fig, ax = plt.subplots(figsize=(11, max(4, n * 0.26)))
+    y = np.arange(n)
+    bar_h = 0.28
+
+    ax.barh(y + bar_h / 2, [wt_avg.get(ct, 0) for ct in order],
+            height=bar_h, color=WT_COLOR,  alpha=0.85, label=WT_LABEL)
+    ax.barh(y - bar_h / 2, [mut_avg.get(ct, 0) for ct in order],
+            height=bar_h, color=MUT_COLOR, alpha=0.85, label=MUT_LABEL)
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(order, fontsize=9)
+    for i, ct in enumerate(order):
+        if ct in set(FOCUS_TYPES):
+            lbl = ax.get_yticklabels()[i]
+            lbl.set_fontweight("bold")
+            lbl.set_color(FOCUS_COLORS.get(ct, "black"))
+
+    ax.set_ylim(-0.5, n - 0.5)
+    ax.set_xlabel("Average % of total tissue volume", fontsize=12)
+    ax.set_title("Cell type composition — WT vs Mutant average\n"
+                 "(sorted by WT average; bold = focal types)", fontsize=13)
+    ax.legend(fontsize=10, loc="center right")
+    fig.tight_layout()
+    return fig
+
 
 def plot_volume_overview(vol_df):
     """Bar chart: log2 fold-change mutant/WT for every cell type, sorted.
@@ -561,80 +605,131 @@ def plot_dice_comparison(vols, type_to_id, cell_types=FOCUS_TYPES):
 
 
 def plot_spatial_diff(vols, type_to_id, cell_types=FOCUS_TYPES):
-    """3-projection difference maps with physically correct aspect ratios.
+    """9-panel spatial map: for each of 3 projections, show WT | Mutant | Diff.
 
-    Projections (max-abs signed):
-      col 0 — Z-projection → (Y, X) plane: both axes = XY_UM → aspect = 1
-      col 1 — Y-projection → (Z, X) plane: row axis = Z_UM, col = XY_UM
-              → imshow aspect = Z_UM / XY_UM ≈ 47 (Z is stretched)
-      col 2 — X-projection → (Z, Y) plane: same aspect as col 1
-
-    'aspect' in imshow is height/width per data unit, so to make Z axis
-    physically correct we pass aspect = Z_UM / XY_UM.
+    WT / Mutant panels: # fish with that cell type at each voxel (0–3), max-proj.
+    Diff panel: (# Mutant fish) − (# WT fish), range −3..+3, max-abs-signed proj.
+    All rows share the same crop per projection axis (union bounding box).
     """
-    # Physical aspect ratios for each projection
-    # imshow: rows = first index, cols = second index
-    # col 0: rows=Y (XY_UM), cols=X (XY_UM)  → aspect = 1
-    # col 1: rows=Z (Z_UM),  cols=X (XY_UM)  → aspect = Z_UM/XY_UM
-    # col 2: rows=Z (Z_UM),  cols=Y (XY_UM)  → aspect = Z_UM/XY_UM
-    proj_aspects = [XY_UM / XY_UM, Z_UM / XY_UM, Z_UM / XY_UM]
-    view_labels  = [
-        f"XY plane\n(Z max-proj, 1:1)",
-        f"XZ plane\n(Y max-proj, Z scaled ×{ANISOTROPY:.0f})",
-        f"YZ plane\n(X max-proj, Z scaled ×{ANISOTROPY:.0f})",
-    ]
+    from matplotlib.colors import ListedColormap, BoundaryNorm
 
+    WT_CMAP   = ListedColormap(["#F5F5F5", "#B2DFDB", "#4DB6AC", "#00838F"])
+    MUT_CMAP  = ListedColormap(["#F5F5F5", "#F8BBD9", "#EC407A", "#C2185B"])
+    # 4-category comparison: 0=neither, 1=both, 2=WT only, 3=Mut only
+    CAT_CMAP  = ListedColormap(["#F5F5F5", "#CCCCCC", WT_COLOR, MUT_COLOR])
+
+    proj_names = ["XY (Z-proj)", "XZ (Y-proj)", "YZ (X-proj)"]
     n_types = len(cell_types)
-    n_views = 3
-    fig, axes = plt.subplots(n_types, n_views,
-                              figsize=(5 * n_views, 3.5 * n_types))
+
+    # Pre-compute counts
+    counts_all = []
+    for ct in cell_types:
+        label_id  = type_to_id[ct]
+        wt_count  = np.stack([vols[f] == label_id for f in WT_FISH],
+                              axis=0).sum(axis=0).astype(np.int8)
+        mut_count = np.stack([vols[f] == label_id for f in MUT_FISH],
+                              axis=0).sum(axis=0).astype(np.int8)
+        # majority presence (≥2 of 3 fish)
+        wt_maj  = (wt_count  >= 2).astype(np.uint8)
+        mut_maj = (mut_count >= 2).astype(np.uint8)
+        counts_all.append((wt_count, mut_count, wt_maj, mut_maj))
+
+    # Shared bounding box per projection axis (union across all cell types)
+    pad = 20
+    crops = []
+    for ax_idx in range(3):
+        union_sig = np.zeros(
+            [s for i, s in enumerate(counts_all[0][0].shape) if i != ax_idx],
+            dtype=bool)
+        for wt_c, mut_c, _, _ in counts_all:
+            union_sig |= ((wt_c > 0) | (mut_c > 0)).max(axis=ax_idx)
+        rr = np.where(union_sig.any(axis=1))[0]
+        cc = np.where(union_sig.any(axis=0))[0]
+        if len(rr) and len(cc):
+            r0 = max(0, rr[0] - pad)
+            r1 = min(union_sig.shape[0], rr[-1] + pad + 1)
+            c0 = max(0, cc[0] - pad)
+            c1 = min(union_sig.shape[1], cc[-1] + pad + 1)
+        else:
+            r0, r1, c0, c1 = 0, union_sig.shape[0], 0, union_sig.shape[1]
+        crops.append((r0, r1, c0, c1))
+
+    # Width ratio per panel: physical_width / physical_height at fixed row height.
+    # XY crop: both axes XY_UM  → w = n_cols / n_rows
+    # XZ crop: cols=XY_UM, rows=Z_UM → w = n_cols / (n_rows * ANISOTROPY)
+    # YZ crop: cols=XY_UM, rows=Z_UM → same formula
+    def _w(crop, anisotropy=1.0):
+        r0, r1, c0, c1 = crop
+        return (c1 - c0) / ((r1 - r0) * anisotropy)
+
+    w_xy = _w(crops[0], 1.0)
+    w_xz = _w(crops[1], ANISOTROPY)
+    w_yz = _w(crops[2], ANISOTROPY)
+    width_ratios = [w_xy, w_xy, w_xy, w_xz, w_xz, w_xz, w_yz, w_yz, w_yz]
+
+    row_h = 4.0
+    fig, axes = plt.subplots(
+        n_types, 9,
+        figsize=(sum(width_ratios) * row_h, row_h * n_types),
+        gridspec_kw={"width_ratios": width_ratios},
+    )
     if n_types == 1:
         axes = axes[np.newaxis, :]
+    MARGIN = 8  # visual padding pixels around each image so data never looks cut
 
-    for row, ct in enumerate(cell_types):
-        label_id = type_to_id[ct]
-        wt_avg   = group_avg_mask(vols, label_id, WT_FISH)
-        mut_avg  = group_avg_mask(vols, label_id, MUT_FISH)
-        diff     = diff_map(wt_avg, mut_avg)   # (Z, Y, X)
+    for row, (ct, (wt_count, mut_count, wt_maj, mut_maj)) in enumerate(
+            zip(cell_types, counts_all)):
 
-        # Max-abs signed projections
-        # col0: project along axis0 (Z) → shape (Y, X)
-        # col1: project along axis1 (Y) → shape (Z, X)
-        # col2: project along axis2 (X) → shape (Z, Y)
-        projs_signed = []
-        for ax_idx in range(3):
-            pos = diff.max(axis=ax_idx)
-            neg = diff.min(axis=ax_idx)
-            signed = np.where(np.abs(pos) >= np.abs(neg), pos, neg)
-            projs_signed.append(signed)
+        for proj_idx, (ax_idx, (r0, r1, c0, c1)) in enumerate(
+                zip(range(3), crops)):
+            cb = proj_idx * 3
+            slim = (proj_idx > 0)  # XZ and YZ are slim
 
-        vmax = max(np.nanmax(np.abs(p)) for p in projs_signed)
-        if vmax < 1e-6:
-            vmax = 1e-6
-        norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
+            def crop(arr2d):
+                return arr2d[r0:r1, c0:c1]
 
-        for col, (proj, vlbl, asp) in enumerate(
-                zip(projs_signed, view_labels, proj_aspects)):
-            ax = axes[row, col]
-            im = ax.imshow(proj, cmap="RdBu_r", norm=norm,
-                           aspect=asp,          # ← physically correct
-                           interpolation="nearest")
-            if col == n_views - 1:
-                plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04,
-                             label="mut−WT\nfreq")
+            def show(ax, img, cmap, vmin=0, vmax=3):
+                h, w = img.shape
+                ax.imshow(img, cmap=cmap, vmin=vmin, vmax=vmax,
+                          aspect="auto", interpolation="nearest")
+                ax.set_xlim(-MARGIN - 0.5, w - 0.5 + MARGIN)
+                ax.set_ylim(h - 0.5 + MARGIN, -MARGIN - 0.5)
+                ax.set_xticks([]); ax.set_yticks([])
+
+            # WT panel
+            ax = axes[row, cb]
+            show(ax, crop(wt_count.max(axis=ax_idx)), WT_CMAP)
             if row == 0:
-                ax.set_title(vlbl, fontsize=8)
-            if col == 0:
-                ax.set_ylabel(ct, fontsize=9, color=FOCUS_COLORS.get(ct, "black"),
+                prefix = f"{proj_names[proj_idx]}\n" if not slim else ""
+                ax.set_title(f"{prefix}WT", fontsize=7)
+            if cb == 0:
+                ax.set_ylabel(ct, fontsize=9,
+                              color=FOCUS_COLORS.get(ct, "black"),
                               fontweight="bold")
-            ax.set_xticks([])
-            ax.set_yticks([])
 
-    fig.suptitle(
-        "Spatial difference maps: Mutant − WT\n"
-        "(blue = depleted in mutant, red = enriched; aspect ratios are physically correct)",
-        fontsize=12, y=1.01,
-    )
+            # Mutant panel
+            ax = axes[row, cb + 1]
+            show(ax, crop(mut_count.max(axis=ax_idx)), MUT_CMAP)
+            if row == 0:
+                prefix = f"{proj_names[proj_idx]}\n" if not slim else ""
+                ax.set_title(f"{prefix}Mutant", fontsize=7)
+
+            # Comparison panel: 4-category majority map
+            wt_p  = wt_maj.max(axis=ax_idx)
+            mut_p = mut_maj.max(axis=ax_idx)
+            cat   = np.zeros_like(wt_p, dtype=np.uint8)
+            cat[(wt_p == 1) & (mut_p == 1)] = 1
+            cat[(wt_p == 1) & (mut_p == 0)] = 2
+            cat[(wt_p == 0) & (mut_p == 1)] = 3
+            ax = axes[row, cb + 2]
+            show(ax, crop(cat), CAT_CMAP)
+            if row == 0:
+                if slim:
+                    ax.set_title("WT\nvs\nMut", fontsize=7)
+                else:
+                    ax.set_title(f"{proj_names[proj_idx]}\nWT vs Mut", fontsize=7)
+
+    fig.suptitle("Spatial diff maps (Max Proj)", fontsize=12)
     fig.tight_layout()
     return fig
 
@@ -678,18 +773,21 @@ def plot_wt_mut_overlay(vols, type_to_id, cell_types=FOCUS_TYPES):
 
 
 def plot_volume_stats_table(vol_df, type_to_id):
-    """Summary statistics table — volumes in µm³, effect sizes, no p-values.
+    """Summary statistics table — % of tissue, volumes in µm³, effect sizes."""
+    # Compute average % of total tissue volume per group
+    totals = vol_df.groupby("fish")["vol_um3"].transform("sum")
+    pct_df = vol_df.copy()
+    pct_df["pct"] = pct_df["vol_um3"] / totals * 100
+    wt_pct  = pct_df[pct_df["group"] == "WT"].groupby("cell_type")["pct"].mean()
+    mut_pct = pct_df[pct_df["group"] == "Mutant"].groupby("cell_type")["pct"].mean()
 
-    Columns: cell type | WT mean±SD (µm³) | Mut mean±SD (µm³) | log₂FC | Cohen's d
-    No p-values: minimum two-sided Mann-Whitney p with n=3 vs 3 is 0.10.
-    """
     rows = []
     for ct in sorted(type_to_id.keys()):
         sub = vol_df[vol_df["cell_type"] == ct]
         wt  = sub[sub["group"] == "WT"]["vol_um3"].values
         mut = sub[sub["group"] == "Mutant"]["vol_um3"].values
         fc  = np.log2((mut.mean() + 1) / (wt.mean() + 1))
-        d   = cohens_d(wt, mut)   # positive = WT > Mutant
+        d   = cohens_d(wt, mut)
 
         def fmt(v):
             if v >= 1e6:
@@ -700,15 +798,16 @@ def plot_volume_stats_table(vol_df, type_to_id):
 
         rows.append({
             "Cell type":        ct,
+            "WT %":             f"{wt_pct.get(ct, 0):.1f}",
+            "Mut %":            f"{mut_pct.get(ct, 0):.1f}",
             "WT µm³ (mean±SD)": f"{fmt(wt.mean())} ± {fmt(wt.std())}",
             "Mut µm³ (mean±SD)":f"{fmt(mut.mean())} ± {fmt(mut.std())}",
             "log₂FC":           f"{fc:+.2f}",
             "Cohen's d":        f"{d:.1f}" if not np.isnan(d) else "—",
-            "★":                "★" if ct in FOCUS_TYPES else "",
         })
     df = pd.DataFrame(rows)
 
-    fig, ax = plt.subplots(figsize=(16, 0.52 * len(rows) + 0.8))
+    fig, ax = plt.subplots(figsize=(16, 0.22 * len(rows) + 0.3))
     ax.axis("off")
     tbl = ax.table(
         cellText=df.values,
@@ -717,15 +816,23 @@ def plot_volume_stats_table(vol_df, type_to_id):
         cellLoc="center",
     )
     tbl.auto_set_font_size(False)
-    tbl.set_fontsize(11)
-    tbl.scale(1, 1.4)
+    tbl.set_fontsize(15)
+    tbl.auto_set_column_width(col=list(range(len(df.columns))))
+    tbl.scale(1, 1.0)
 
-    # Header
-    for j in range(len(df.columns)):
-        tbl[0, j].set_facecolor("#2C3E50")
-        tbl[0, j].set_text_props(color="white", fontweight="bold")
+    # Header colours: WT columns teal, Mut columns magenta, others dark
+    col_colors = {
+        "WT %":             WT_COLOR,
+        "Mut %":            MUT_COLOR,
+        "WT µm³ (mean±SD)": WT_COLOR,
+        "Mut µm³ (mean±SD)":MUT_COLOR,
+    }
+    for j, col_name in enumerate(df.columns):
+        hdr = tbl[0, j]
+        hdr.set_facecolor(col_colors.get(col_name, "#2C3E50"))
+        hdr.set_text_props(color="white", fontweight="bold")
 
-    # Highlight focus rows, colour log₂FC column
+    fc_col = list(df.columns).index("log₂FC")
     for i, row_d in enumerate(rows, start=1):
         ct  = row_d["Cell type"]
         fc  = float(row_d["log₂FC"])
@@ -734,7 +841,7 @@ def plot_volume_stats_table(vol_df, type_to_id):
             cell = tbl[i, j]
             if col:
                 cell.set_facecolor(col + "18")
-            if j == 3:   # log₂FC column
+            if j == fc_col:
                 if fc > 0.5:
                     cell.set_facecolor("#E8F8F5")
                     cell.set_text_props(color="#1E8449", fontweight="bold")
@@ -742,7 +849,6 @@ def plot_volume_stats_table(vol_df, type_to_id):
                     cell.set_facecolor("#FDEDEC")
                     cell.set_text_props(color="#C0392B", fontweight="bold")
 
-    # Title is rendered as an HTML heading above the figure; no matplotlib title needed
     fig.tight_layout(pad=0.1)
     return fig
 
@@ -1136,22 +1242,29 @@ Spinal cord (control) should be relatively unchanged.</p>
     # ── Section 1: Composition ────────────────────────────────────────────────
     sections.append("<h2>1 · Cell type composition per fish</h2>")
     sections.append("<p>Each bar shows one fish's tissue broken down by cell type as a "
-                    "percentage of its total labelled volume. Focal cell types are coloured "
-                    "and labelled; all others are gray.</p>")
+                    "percentage of its total labelled volume.</p>")
     print("  fig: composition ...")
     fig = plot_composition(vol_df)
     sections.append(img_tag(fig_to_b64(fig), ""))
 
-    # ── Section 2: Overview fold-change ───────────────────────────────────────
-    sections.append("<h2>2 · Global volume changes: all cell types</h2>")
+    # ── Section 2: Composition summary WT vs Mutant ───────────────────────────
+    sections.append("<h2>2 · Cell type composition — WT vs Mutant average</h2>")
+    sections.append("<p>Average percentage of total tissue volume per cell type, "
+                    "comparing WT (fish 4–6) and Mutant (fish 1–3).</p>")
+    print("  fig: composition summary ...")
+    fig = plot_composition_summary(vol_df)
+    sections.append(img_tag(fig_to_b64(fig), ""))
+
+    # ── Section 3: Overview fold-change ───────────────────────────────────────
+    sections.append("<h2>3 · Global volume changes: all cell types</h2>")
     sections.append("<p>Log₂ fold-change of mean voxel volume (Mutant / WT), "
                     "averaged across fish within each group.</p>")
     print("  fig: volume overview ...")
     fig = plot_volume_overview(vol_df)
     sections.append(img_tag(fig_to_b64(fig), ""))
 
-    # ── Section 2: Focal cell type volumes ────────────────────────────────────
-    sections.append("<h2>3 · Focal cell-type volumes — individual fish</h2>")
+    # ── Section 4: Focal cell type volumes ────────────────────────────────────
+    sections.append("<h2>4 · Focal cell-type volumes — individual fish</h2>")
     sections.append("<p>Physical volume in µm³ (voxel count × 0.4516 µm³/voxel).<br>"
                     "Bar = group mean; error bar = ±1 SD; dots = individual fish.<br>"
                     "<b>log₂FC</b> and <b>Cohen's d</b> are annotated inside each subplot.</p>")
@@ -1161,8 +1274,8 @@ Spinal cord (control) should be relatively unchanged.</p>
         "Physical volume (µm³) per fish for each focal cell type. Individual fish points overlay "
         "the group mean bar."))
 
-    # ── Section 3: Dice within vs between ─────────────────────────────────────
-    sections.append("<h2>4 · Within- vs between-group Dice — focal cell types</h2>")
+    # ── Section 5: Dice within vs between ─────────────────────────────────────
+    sections.append("<h2>5 · Within- vs between-group Dice — focal cell types</h2>")
     sections.append("<p>Within-WT (3 pairs), within-Mutant (3 pairs), and between-group "
                     "(9 pairs) Dice for each focal cell type. "
                     "For a control (spinal cord) all three should be similar; "
@@ -1178,8 +1291,8 @@ Spinal cord (control) should be relatively unchanged.</p>
     fig = plot_dice_comparison(vols, type_to_id)
     sections.append(img_tag(fig_to_b64(fig), ""))
 
-    # ── Section 4: All-cell-type Dice summary ──────────────────────────────────
-    sections.append("<h2>5 · Dice reproducibility — all cell types</h2>")
+    # ── Section 6: All-cell-type Dice summary ──────────────────────────────────
+    sections.append("<h2>6 · Dice reproducibility — all cell types</h2>")
     sections.append("<p>For every cell type: mean within-WT, within-Mutant, and "
                     "between-group Dice, sorted by how much the between-group Dice "
                     "drops below the within-group maximum. The bottom of this list "
@@ -1190,53 +1303,22 @@ Spinal cord (control) should be relatively unchanged.</p>
         "Dice reproducibility for all 34 cell types. Cell types with a large "
         "gap between within- and between-group Dice are spatially most disrupted."))
 
-    # ── Section 6: log2FC vs Dice-loss scatter ─────────────────────────────────
-    sections.append("<h2>6 · Volume change vs spatial disruption (scatter)</h2>")
-    sections.append("<p>Each point = one cell type. X-axis: volume fold-change in "
-                    "mutant. Y-axis: Dice loss (within-group Dice − between-group Dice). "
-                    "Cell types in the top-left (lost volume, disrupted) or top-right "
-                    "(gained volume, disrupted) are most changed. The bottom centre "
-                    "contains cell types that are spatially conserved.</p>")
-    print("  fig: FC vs dice-loss scatter ...")
-    fig = plot_fc_vs_dice_scatter(dice_cache, vol_df, type_to_id)
-    sections.append(img_tag(fig_to_b64(fig),
-        "Volume fold-change vs spatial Dice loss for all cell types. Labelled points "
-        "are focal cell types."))
-
     # ── Section 7: Spatial difference maps ────────────────────────────────────
-    sections.append("<h2>7 · Spatial difference maps — Mutant minus WT</h2>")
-    sections.append("<p>For each focal cell type, each voxel was first averaged "
-                    "across WT fish and across mutant fish (giving a 0–1 occupancy "
-                    "frequency). The difference (Mutant − WT) is shown in three "
-                    "orthogonal max-intensity projections. "
-                    "<b>Blue</b> = region present in WT but absent/reduced in mutant; "
-                    "<b>Red</b> = region present in mutant but absent/reduced in WT. "
-                    "Row = cell type, Column = projection axis.</p>")
+    sections.append("<h2>7 · Spatial diff maps (Max Proj)</h2>")
+    sections.append("<p>For each focal cell type: WT and Mutant occupancy (0–3 fish, max projection) "
+                    "and a presence comparison based on majority vote (≥ 2 of 3 fish). "
+                    "<span style='color:#00838F;font-weight:bold'>Teal</span> = WT only, "
+                    "<span style='color:#C2185B;font-weight:bold'>Magenta</span> = Mutant only, "
+                    "Gray = both.</p>")
     print("  fig: spatial difference maps ...")
     fig = plot_spatial_diff(vols, type_to_id)
     sections.append(img_tag(fig_to_b64(fig, dpi=120),
-        "3-projection spatial difference maps (Mutant − WT). "
-        "Focal cell types × 3 orthogonal views."))
+        "Discrete spatial maps: teal = WT only, magenta = Mutant only, "
+        "gray = both, white = neither. Focal cell types × 3 orthogonal views."))
 
-    # ── Section 8: WT vs Mutant frequency overlays ────────────────────────────
-    sections.append("<h2>8 · Average occupancy maps — WT vs Mutant side-by-side</h2>")
-    sections.append("<p>Each map shows the fraction of fish (0–1) that have a given "
-                    "cell type at each voxel (Z max-projection). Comparing WT and "
-                    "mutant side-by-side shows where cell types shift, expand, "
-                    "or collapse.</p>")
-    print("  fig: WT vs Mutant frequency overlays ...")
-    fig = plot_wt_mut_overlay(vols, type_to_id)
-    sections.append(img_tag(fig_to_b64(fig, dpi=120),
-        "Voxel occupancy frequency maps (XY plane, 1:1 aspect) for each focal cell type, "
-        "WT (left) vs Mutant (right). Colour scale is shared per row."))
+    # ── Section 8: Statistics table ───────────────────────────────────────────
+    sections.append("<h2>8 · Summary statistics table — all cell types</h2>")
 
-    # ── Section 9: Statistics table ───────────────────────────────────────────
-    sections.append("<h2>9 · Summary statistics table — all cell types</h2>")
-    sections.append("<p>Physical volume mean ± SD (µm³), log₂ fold-change, "
-                    "and Cohen's d effect size for every cell type. "
-                    "Focal cell types have coloured backgrounds. "
-                    "No p-values: with n=3 per group the minimum achievable two-sided "
-                    "Mann–Whitney p is 0.10.</p>")
     print("  fig: summary statistics table ...")
     fig = plot_volume_stats_table(vol_df, type_to_id)
     sections.append(img_tag(fig_to_b64(fig, dpi=100),
