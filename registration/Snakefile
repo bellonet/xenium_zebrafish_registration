@@ -32,8 +32,8 @@ INPUT_FOLDERS = [
 ]
 
 PYTHON   = "python3"
-DATA     = "../data"
-ANALYSIS = "../analysis"
+DATA     = "../../data"
+ANALYSIS = "../../analysis"
 
 # Constrain wildcards so Snakemake can unambiguously parse underscore-separated
 # experiment names like dapi_blend_rigid_affine_z10.

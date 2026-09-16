@@ -32,15 +32,18 @@ Outputs  (analysis/5_consensus/)
   consensus_mask.tif          — (Z_trim, H, W) uint8 binary mask; 1 = keep
   cutoff_info.json            — chosen z cutoff and parameters used
   qc_agreement_curve.png      — per-z within-group agreement, cutoff marked
-
-The mask can be applied to cell_type_label.tif and channel TIFFs before
-quantitative analysis or 3D visualisation.
+  {fish}/cell_type_label.tif  — masked cell-type label volume per fish
+  {fish}/seg_cells.tif        — masked instance segmentation per fish
 
 Usage
 -----
   python3 5_trim_yolk.py
   python3 5_trim_yolk.py --experiment dapi_blend_rigid_affine_z10
   python3 5_trim_yolk.py --min-agreement 0.67 --z-threshold 0.5
+
+  # Apply existing mask to additional volumes (no mask recomputation):
+  python3 5_trim_yolk.py --apply seg_cells.tif
+  python3 5_trim_yolk.py --apply seg_cells.tif seg_nuclei.tif
 """
 
 import argparse
@@ -60,8 +63,8 @@ log = logging.getLogger(__name__)
 # ── configuration ──────────────────────────────────────────────────────────────
 
 EXPERIMENT   = "dapi_blend_rigid_affine_z10"   # best experiment from script 4
-IN_BASE      = "../analysis/4_registered"
-OUT_DIR      = "../analysis/5_consensus"
+IN_BASE      = "../../analysis/4_registered"
+OUT_DIR      = "../../analysis/5_consensus"
 
 WT_FISH      = [4, 5, 6]
 MUT_FISH     = [1, 2, 3]
@@ -181,6 +184,48 @@ def plot_agreement_curve(wt_agree: np.ndarray, mut_agree: np.ndarray,
     log.info("QC plot saved: %s", out_path)
 
 
+# ── apply step ─────────────────────────────────────────────────────────────────
+
+def apply_mask(filenames: list[str], experiment: str, in_base: str,
+               out_dir: str) -> None:
+    """Apply the existing consensus mask to additional volumes.
+
+    Reads consensus_mask.tif and cutoff_info.json from out_dir, then for each
+    filename finds the corresponding volume under in_base/{experiment}/{fish}/,
+    crops to z_cutoff, multiplies by the mask, and writes to out_dir/{fish}/.
+    """
+    mask_path = os.path.join(out_dir, "consensus_mask.tif")
+    info_path = os.path.join(out_dir, "cutoff_info.json")
+    if not os.path.exists(mask_path) or not os.path.exists(info_path):
+        raise FileNotFoundError(
+            f"consensus_mask.tif / cutoff_info.json not found in {out_dir}. "
+            "Run without --apply first to generate the mask."
+        )
+    mask = tifffile.imread(mask_path)
+    with open(info_path) as f:
+        info = json.load(f)
+    z_cutoff   = info["z_cutoff"]
+    all_fish   = info["wt_fish"] + info["mut_fish"]
+    log.info("Loaded mask %s, z_cutoff=%d, fish=%s", mask.shape, z_cutoff, all_fish)
+
+    for filename in filenames:
+        log.info("Applying mask to %s…", filename)
+        for fish in all_fish:
+            in_path  = os.path.join(in_base, experiment, str(fish), filename)
+            out_fish = os.path.join(out_dir, str(fish))
+            os.makedirs(out_fish, exist_ok=True)
+            out_path = os.path.join(out_fish, filename)
+            if not os.path.exists(in_path):
+                log.warning("  fish %d: %s not found — skipping", fish, in_path)
+                continue
+            vol     = tifffile.imread(in_path)
+            trimmed = vol[:z_cutoff]
+            m       = mask.reshape(mask.shape + (1,) * (trimmed.ndim - mask.ndim))
+            masked  = (trimmed * m).astype(vol.dtype)
+            tifffile.imwrite(out_path, masked, compression="zlib")
+            log.info("  fish %d: saved %s", fish, out_path)
+
+
 # ── main ───────────────────────────────────────────────────────────────────────
 
 def main(experiment: str, in_base: str, out_dir: str,
@@ -266,6 +311,12 @@ if __name__ == "__main__":
                         help="Fraction of fish in group that must agree (default: %(default).2f)")
     parser.add_argument("--z-threshold",    type=float, default=Z_AGREEMENT_THRESHOLD,
                         help="Mean within-group agreement below which z is cut (default: %(default).2f)")
+    parser.add_argument("--apply",          nargs="+", metavar="FILENAME",
+                        help="Apply existing mask to these filenames instead of recomputing. "
+                             "Reads consensus_mask.tif and cutoff_info.json from --out-dir.")
     args = parser.parse_args()
-    main(args.experiment, args.in_base, args.out_dir,
-         args.min_agreement, args.z_threshold)
+    if args.apply:
+        apply_mask(args.apply, args.experiment, args.in_base, args.out_dir)
+    else:
+        main(args.experiment, args.in_base, args.out_dir,
+             args.min_agreement, args.z_threshold)

@@ -37,7 +37,7 @@ from skimage.measure import block_reduce, marching_cubes
 # ── configuration ──────────────────────────────────────────────────────────────
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT  = os.path.dirname(SCRIPT_DIR)
+REPO_ROOT  = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 DATA_BASE  = os.path.join(os.path.dirname(REPO_ROOT), "analysis", "5_consensus")
 OUT_DIR    = os.path.join(SCRIPT_DIR, "meshes")
 

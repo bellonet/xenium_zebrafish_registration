@@ -30,7 +30,7 @@ warnings.filterwarnings('ignore', message='.*OME series cannot read multi-file p
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
-BASE_PATH = '../data'
+BASE_PATH = '../../data'
 INPUT_FOLDERS = [
     'output-XETG00046__0038328__Region_1__20250717__075022',
     'output-XETG00046__0043921__Region_1__20250620__084504',
@@ -40,7 +40,7 @@ MORPHOLOGY_SUBPATH = 'morphology_focus/morphology_focus_0000.ome.tif'
 DAPI_CHANNEL = 0
 NUM_CHANNELS = 4
 
-ANALYSIS_DIR     = '../analysis'
+ANALYSIS_DIR     = '../../analysis'
 DETECTION_SUBDIR = '1_detection'
 INITIAL_TILES_DIR = '_initial_tiles_tmp'
 TILES_DIR         = 'tiles'

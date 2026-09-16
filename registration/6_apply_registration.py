@@ -34,7 +34,7 @@ APPLY_TO_IMAGE       = False  # set to True + provide path to transform a custom
 CUSTOM_IMAGE_PATH    = ''     # (Z, H, W) float32 TIFF in raw Xenium space
 NN_INTERPOLATION     = False  # True for label/seg images (no colour mixing)
 
-OUT_DIR = '../analysis/6_applied'
+OUT_DIR = '../../analysis/6_applied'
 
 # Run → Xenium output folder mapping (keep in sync with script 2's RUN_FOLDERS)
 RUN_FOLDERS: dict = {
@@ -55,10 +55,10 @@ from scipy.ndimage import map_coordinates
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
-DATA_DIR = '../data'
-IN2_DIR  = '../analysis/2_registered'
-IN3_DIR  = '../analysis/3_improved_registration'
-IN4_DIR  = '../analysis/4_registered'
+DATA_DIR = '../../data'
+IN2_DIR  = '../../analysis/2_registered'
+IN3_DIR  = '../../analysis/3_improved_registration'
+IN4_DIR  = '../../analysis/4_registered'
 
 XENIUM_PX_UM     = 0.2125
 XENIUM_PX_PER_UM = 1.0 / XENIUM_PX_UM
@@ -530,7 +530,7 @@ def transform_points(df: pd.DataFrame,
 
 def _get_bbox(fish: int) -> Tuple[float, float]:
     """Return (bbox_row0, bbox_col0) for this fish in the configured RUN."""
-    csvs = _glob.glob('../analysis/fish_bbox_summary*.csv')
+    csvs = _glob.glob('../../analysis/fish_bbox_summary*.csv')
     if not csvs:
         logging.warning('No fish_bbox_summary CSV — bbox offset set to 0.')
         return 0.0, 0.0

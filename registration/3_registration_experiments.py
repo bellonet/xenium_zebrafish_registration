@@ -45,10 +45,10 @@ import scipy.ndimage as _snd
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # ── paths ──────────────────────────────────────────────────────────────────────
-IN2_DIR      = '../analysis/2_registered'
-OUT_DIR      = '../analysis/3_improved_registration'
-DATA_DIR     = '../data'
-SUMMARY_GLOB = '../analysis/fish_bbox_summary_tagged_*.csv'
+IN2_DIR      = '../../analysis/2_registered'
+OUT_DIR      = '../../analysis/3_improved_registration'
+DATA_DIR     = '../../data'
+SUMMARY_GLOB = '../../analysis/fish_bbox_summary_tagged_*.csv'
 
 # ── shared constants (must match script 2) ─────────────────────────────────────
 XENIUM_PX_PER_UM = 4.705882

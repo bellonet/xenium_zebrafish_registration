@@ -56,9 +56,9 @@ from scipy.ndimage import zoom, shift as nd_shift, rotate as nd_rotate
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 # ── paths ──────────────────────────────────────────────────────────────────────
-IN2_DIR = '../analysis/2_registered'
-IN3_DIR = '../analysis/3_improved_registration'
-OUT_DIR = '../analysis/4_registered'
+IN2_DIR = '../../analysis/2_registered'
+IN3_DIR = '../../analysis/3_improved_registration'
+OUT_DIR = '../../analysis/4_registered'
 
 # ── fish groups ────────────────────────────────────────────────────────────────
 WT_FISH     = [4, 5, 6]

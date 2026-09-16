@@ -41,10 +41,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 SLICE_RE = re.compile(r'^(\d+)_')
 
-SRC_DIR      = '../analysis/1_detection/individual_fish_2d'
-OUT_DIR      = '../analysis/2_registered'
-DATA_DIR     = '../data'
-SUMMARY_GLOB = '../analysis/fish_bbox_summary_tagged_*.csv'
+SRC_DIR      = '../../analysis/1_detection/individual_fish_2d'
+OUT_DIR      = '../../analysis/2_registered'
+DATA_DIR     = '../../data'
+SUMMARY_GLOB = '../../analysis/fish_bbox_summary_tagged_*.csv'
 NUM_CHANNELS = 4
 DAPI_CHANNEL = 0
 
