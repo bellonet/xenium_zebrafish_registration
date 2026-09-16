@@ -2,7 +2,7 @@
 make_3d_report.py
 =================
 Reads organella geometry parquets and generates a self-contained two-panel
-synchronized 3D HTML viewer (report_3d.html).
+synchronized 3D HTML viewer (3d_viewer.html).
 
 Left panel  = WT     (fish 4)
 Right panel = Mutant (fish 3)
@@ -30,7 +30,7 @@ REPO_ROOT      = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 ORGANELLA_DIR  = os.path.join(REPO_ROOT, "visualization", "organella")
 REPORT_PARQUET = os.path.join(ORGANELLA_DIR, "report.parquet")
 MESH_DIR       = os.path.join(ORGANELLA_DIR, "report_meshes")
-OUT_HTML       = os.path.join(SCRIPT_DIR, "report_3d.html")
+OUT_HTML       = os.path.join(SCRIPT_DIR, "3d_viewer.html")
 
 WT_FISH  = 4
 MUT_FISH = 3
