@@ -318,6 +318,14 @@ input[type=range]{{width:100%;accent-color:#aaa;margin-top:4px}}
       <div style="font-size:12px;color:#666;margin-bottom:2px">Speed &mdash; <span id="orbit-secs">30</span>s / orbit</div>
       <input type="range" id="speed-slider" min="0.3" max="10" step="0.1" value="1">
     </div>
+    <label class="grp-row" style="margin-top:10px">
+      <input type="checkbox" id="circumduction">
+      <span>Circumduction (fixed head)</span>
+    </label>
+    <div id="circ-controls" style="display:none;margin-top:6px">
+      <div style="font-size:12px;color:#666;margin-bottom:2px">Circle size &mdash; <span id="circ-pct">100</span>%</div>
+      <input type="range" id="circ-slider" min="5" max="300" step="5" value="100">
+    </div>
     <button id="record-btn">Record</button>
     <div class="note" style="margin-top:4px">starts 1s after click · ends 1s before clicking Stop</div>
     <label class="grp-row" style="margin-top:6px">
@@ -437,12 +445,28 @@ const bbox   = new THREE.Box3().setFromArray(allVerts);
 const centre = bbox.getCenter(new THREE.Vector3());
 const size   = bbox.getSize(new THREE.Vector3()).length();
 controls.target.copy(centre);
-camera.position.copy(centre).add(new THREE.Vector3(0, size * 0.15, size * 0.9));
+camera.position.copy(centre).add(new THREE.Vector3(0, size * 0.15, size * -0.9));
 camera.near = size * 0.001;
 camera.far  = size * 10;
 camera.updateProjectionMatrix();
 const INIT_POS = camera.position.clone();
 const INIT_TGT = controls.target.clone();
+
+// Circumduction: long axis, head (far end), and rotation axis
+const _bboxSize = bbox.getSize(new THREE.Vector3());
+const _longAxis = _bboxSize.x >= _bboxSize.y && _bboxSize.x >= _bboxSize.z ? 'x'
+                : _bboxSize.y >= _bboxSize.z ? 'y' : 'z';
+const _minPt = centre.clone(); _minPt[_longAxis] = bbox.min[_longAxis];
+const _maxPt = centre.clone(); _maxPt[_longAxis] = bbox.max[_longAxis];
+const HEAD_POS = camera.position.distanceTo(_minPt) > camera.position.distanceTo(_maxPt)
+  ? _minPt.clone() : _maxPt.clone();
+// CIRC_AXIS = long-axis unit vector pointing from head toward camera (tail direction)
+const CIRC_AXIS = new THREE.Vector3(
+  _longAxis === 'x' ? 1 : 0,
+  _longAxis === 'y' ? 1 : 0,
+  _longAxis === 'z' ? 1 : 0
+);
+if (CIRC_AXIS.dot(new THREE.Vector3().subVectors(camera.position, HEAD_POS)) < 0) CIRC_AXIS.negate();
 
 // ── stats overlay ─────────────────────────────────────────────────────────────
 function fmtVol(v) {{
@@ -538,6 +562,52 @@ showLegendCb.addEventListener('change', () => {{
   document.getElementById('ct-toggles').style.display = showLegendCb.checked ? '' : 'none';
 }});
 
+const circumductionCb = document.getElementById('circumduction');
+const circSlider     = document.getElementById('circ-slider');
+const circPctSpan    = document.getElementById('circ-pct');
+let BASE_PERP_LEN = 0;
+
+function getPerpLen() {{
+  const off = new THREE.Vector3().subVectors(camera.position, HEAD_POS);
+  const par = CIRC_AXIS.clone().multiplyScalar(off.dot(CIRC_AXIS));
+  return off.sub(par).length();
+}}
+
+function setCircleSize(pct) {{
+  const target = BASE_PERP_LEN * pct / 100;
+  const off = new THREE.Vector3().subVectors(camera.position, HEAD_POS);
+  const par = CIRC_AXIS.clone().multiplyScalar(off.dot(CIRC_AXIS));
+  const perp = new THREE.Vector3().subVectors(new THREE.Vector3().subVectors(camera.position, HEAD_POS), par);
+  if (perp.length() < 0.001) {{
+    const arb = Math.abs(CIRC_AXIS.x) < 0.9
+      ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+    perp.copy(arb.cross(CIRC_AXIS).normalize());
+  }}
+  perp.normalize().multiplyScalar(target);
+  camera.position.copy(HEAD_POS).add(par).add(perp);
+  controls.update();
+}}
+
+circumductionCb.addEventListener('change', () => {{
+  const on = circumductionCb.checked;
+  controls.target.copy(on ? HEAD_POS : INIT_TGT);
+  tiltSlider.disabled = on;
+  tiltSlider.style.opacity = on ? '0.35' : '';
+  document.getElementById('circ-controls').style.display = on ? '' : 'none';
+  if (on) {{
+    BASE_PERP_LEN = getPerpLen();
+    if (BASE_PERP_LEN < 1) BASE_PERP_LEN = 50;
+    circSlider.value = 100;
+    circPctSpan.textContent = '100';
+  }}
+  controls.update();
+}});
+
+circSlider.addEventListener('input', () => {{
+  circPctSpan.textContent = circSlider.value;
+  if (circumductionCb.checked) setCircleSize(parseFloat(circSlider.value));
+}});
+
 function stepAutoRotation() {{
   const now = performance.now();
   if (lastRotTime === null) {{ lastRotTime = now; return; }}
@@ -546,11 +616,18 @@ function stepAutoRotation() {{
   const speed = parseFloat(speedSlider.value);
   const dr = speed * 2 * Math.PI / 30 * dt;
   rotAngle += dr;
-  const tiltRad = parseFloat(tiltSlider.value) * Math.PI / 180;
-  const axis = new THREE.Vector3(Math.sin(tiltRad), Math.cos(tiltRad), 0);
-  const offset = new THREE.Vector3().subVectors(camera.position, controls.target);
+  let axis, pivot;
+  if (circumductionCb && circumductionCb.checked) {{
+    axis  = CIRC_AXIS;
+    pivot = HEAD_POS;
+  }} else {{
+    const tiltRad = parseFloat(tiltSlider.value) * Math.PI / 180;
+    axis  = new THREE.Vector3(Math.sin(tiltRad), Math.cos(tiltRad), 0);
+    pivot = controls.target;
+  }}
+  const offset = new THREE.Vector3().subVectors(camera.position, pivot);
   offset.applyQuaternion(new THREE.Quaternion().setFromAxisAngle(axis, dr));
-  camera.position.copy(controls.target).add(offset);
+  camera.position.copy(pivot).add(offset);
 }}
 
 let mediaRecorder = null, recordChunks = [], chunkTimes = [];
