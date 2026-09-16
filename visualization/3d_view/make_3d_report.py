@@ -318,7 +318,7 @@ input[type=range]{{width:100%;accent-color:#aaa;margin-top:4px}}
       <div style="font-size:12px;color:#666;margin-bottom:2px">Speed &mdash; <span id="orbit-secs">30</span>s / orbit</div>
       <input type="range" id="speed-slider" min="0.3" max="10" step="0.1" value="1">
     </div>
-    <button id="record-btn" disabled>Record</button>
+    <button id="record-btn">Record</button>
     <div class="note" style="margin-top:4px">starts 1s after click · ends 1s before clicking Stop</div>
     <label class="grp-row" style="margin-top:6px">
       <input type="checkbox" id="stats-in-rec" checked>
@@ -523,9 +523,7 @@ let lastRotTime = null;
 
 autoRotateCb.addEventListener('change', () => {{
   isAutoRotating = autoRotateCb.checked;
-  recordBtn.disabled = !isAutoRotating;
   lastRotTime = null;
-  if (!isAutoRotating) stopRecording();
 }});
 
 tiltSlider.addEventListener('input', () => {{
@@ -565,7 +563,6 @@ function setRecordingUI(active) {{
   }} else {{
     recordBtn.classList.remove('recording');
     recordBtn.textContent = 'Record';
-    recordBtn.disabled = !autoRotateCb.checked;
   }}
 }}
 
