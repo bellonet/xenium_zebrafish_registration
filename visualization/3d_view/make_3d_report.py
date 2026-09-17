@@ -377,6 +377,13 @@ const renderer = new THREE.WebGLRenderer({{ canvas, antialias: true }});
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setClearColor(0x111111);
 
+// Offscreen renderer used only during recording — fixed 1920px width so
+// output resolution is consistent regardless of screen DPR or window size.
+const REC_WIDTH  = 1920;
+const recCanvas  = document.createElement('canvas');
+const recRenderer = new THREE.WebGLRenderer({{ canvas: recCanvas, antialias: true }});
+recRenderer.setClearColor(0x111111);
+
 const camera   = new THREE.PerspectiveCamera(45, 1, 1, 50000);
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping    = true;
@@ -693,9 +700,10 @@ resize();
 
 // ── render loop (scissor split) ───────────────────────────────────────────────
 function drawComposite() {{
-  if (compCanvas.width  !== canvas.width)  compCanvas.width  = canvas.width;
-  if (compCanvas.height !== canvas.height) compCanvas.height = canvas.height;
-  compCtx.drawImage(canvas, 0, 0);
+  const src = mediaRecorder ? recCanvas : canvas;
+  if (compCanvas.width  !== src.width)  compCanvas.width  = src.width;
+  if (compCanvas.height !== src.height) compCanvas.height = src.height;
+  compCtx.drawImage(src, 0, 0);
   const w = compCanvas.width;
   compCtx.font = 'bold 15px system-ui,sans-serif';
   compCtx.textAlign = 'center';
@@ -762,7 +770,21 @@ function animate() {{
   renderer.setViewport(hw, 0, W - hw, H);
   renderer.setScissor(hw, 0, W - hw, H);
   renderer.render(sceneMut, camera);
-  if (mediaRecorder) drawComposite();
+  if (mediaRecorder) {{
+    const rH = Math.round(REC_WIDTH / (wrap.clientWidth / wrap.clientHeight));
+    if (recCanvas.width !== REC_WIDTH || recCanvas.height !== rH) recRenderer.setSize(REC_WIDTH, rH, false);
+    const rHW = Math.floor(REC_WIDTH / 2);
+    recRenderer.setScissorTest(true);
+    recRenderer.setViewport(0, 0, rHW, rH);
+    recRenderer.setScissor(0, 0, rHW, rH);
+    camera.aspect = rHW / rH;
+    camera.updateProjectionMatrix();
+    recRenderer.render(sceneWT, camera);
+    recRenderer.setViewport(rHW, 0, REC_WIDTH - rHW, rH);
+    recRenderer.setScissor(rHW, 0, REC_WIDTH - rHW, rH);
+    recRenderer.render(sceneMut, camera);
+    drawComposite();
+  }}
 }}
 animate();
 updateStats();
