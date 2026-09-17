@@ -162,7 +162,7 @@ def load_geometry(fish: int) -> dict:
             nv = len(r[0])
             nf = len(r[1])
             print(f"  fish {fish}  {ct:40s}  {nv:7,} verts  {nf:6,} faces  ({len(pairs)} instances)")
-            result[ct] = to_js_geo(r[0], r[1], max_faces=100_000)
+            result[ct] = to_js_geo(r[0], r[1], max_faces=500_000)
         else:
             print(f"  fish {fish}  {ct:40s}  NO GEOMETRY")
 

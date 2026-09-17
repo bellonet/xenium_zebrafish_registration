@@ -15,8 +15,11 @@ organella process analysis/organella/ \
   -o zebrafish_registration/visualization/organella/report.parquet \
   --voxel-size-um 10,0.2125,0.2125 \
   --with-mesh \
-  --max-workers 6
+  --max-workers 6 \
+  --geometry-as "blood=mesh,cranial_vasculature=mesh,hematopoietic_cell=mesh,pronephric_distal_early_tubule=mesh,spinal_cord=mesh,tissue=mesh"
 ```
+
+`--geometry-as` forces every structure to use a real mesh instead of an ellipsoid primitive. Without it, organella uses ellipsoids for compact/round instances (sphericity ≥ 0.75, aspect ratio ≤ 3), which shows up as large featureless ellipsoids in the 3D viewer.
 
 Then view:
 ```bash
