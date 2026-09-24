@@ -1,0 +1,3 @@
+# Installed in ./.venv at the time this workflow was authored.
+luxar==2026.9.22
+
